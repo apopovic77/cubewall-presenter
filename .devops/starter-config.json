@@ -1,0 +1,17 @@
+{
+  "BACKUP_PREFIX": "cubewall",
+  "BUILD_COMMAND": "npm run build",
+  "DEPLOY_PATH": "/var/www/cubewall/site",
+  "DEV_BRANCH": "dev",
+  "INSTALL_DEPS_COMMAND": "npm ci --production=false",
+  "MAIN_BRANCH": "main",
+  "NODE_VERSION": "20",
+  "PROJECT_NAME": "Cubewall Presenter",
+  "PROJECT_SLUG": "cubewall-presenter",
+  "PROJECT_TYPE": "node",
+  "REPO_ROOT": "/var/code/cubewall-presenter",
+  "SITE_URL": "https://cubewall.arkturian.com",
+  "STARTER_PATH": "/Volumes/DatenAP/Code/github-starterpack",
+  "WEB_GROUP": "www-data",
+  "WEB_USER": "www-data"
+}
