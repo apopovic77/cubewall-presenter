@@ -20,6 +20,8 @@ interface CandidatesResponse {
   items?: CandidateItem[];
 }
 
+const globalCrypto: Crypto | undefined = typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
+
 function resolveApiBaseUrl(): string {
   const explicit = import.meta.env.VITE_KORALMBAHN_API_URL;
   if (explicit && explicit.length > 0) {
@@ -66,8 +68,8 @@ function createDeterministicId(item: CandidateItem): string {
   if (item.url) {
     return item.url;
   }
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
+  if (globalCrypto && typeof globalCrypto.randomUUID === 'function') {
+    return globalCrypto.randomUUID();
   }
   return `item-${Math.random().toString(36).slice(2, 10)}`;
 }

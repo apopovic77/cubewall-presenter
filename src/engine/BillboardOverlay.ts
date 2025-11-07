@@ -43,6 +43,7 @@ export class BillboardOverlay {
   private readonly container: Rectangle;
   private readonly infoText: TextBlock;
   private readonly offsetVector = new Vector3(0, 0, 0);
+  private readonly dateFormatter = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium' });
 
   private lineMesh: Mesh | null = null;
   private selectedCell: CubeCell | null = null;
@@ -168,9 +169,38 @@ export class BillboardOverlay {
   }
 
   private updateBillboardText(selectionInfo: CubeSelectionInfo): void {
-    const colorHex = selectionInfo.color.toHexString();
-    const textureLabel = this.getTextureLabel(selectionInfo.textureUrl);
-    this.infoText.text = `Cube (${selectionInfo.gridX}, ${selectionInfo.gridZ})\nColor: ${colorHex}\nTexture: ${textureLabel}`;
+    const item = selectionInfo.content;
+    if (item) {
+      const lines: string[] = [];
+      lines.push(item.title || 'Unbenannter Beitrag');
+
+      const metaParts: string[] = [];
+      if (item.sourceName) metaParts.push(item.sourceName);
+      if (item.publishedAt) {
+        const date = new Date(item.publishedAt);
+        if (!Number.isNaN(date.getTime())) {
+          metaParts.push(this.dateFormatter.format(date));
+        }
+      }
+      if (item.category) metaParts.push(item.category);
+      if (metaParts.length > 0) {
+        lines.push(metaParts.join(' · '));
+      }
+
+      if (item.summary) {
+        lines.push('', item.summary);
+      }
+
+      if (item.url) {
+        lines.push('', item.url);
+      }
+
+      this.infoText.text = lines.join('\n');
+    } else {
+      const colorHex = selectionInfo.color.toHexString();
+      const textureLabel = this.getTextureLabel(selectionInfo.textureUrl);
+      this.infoText.text = `Cube (${selectionInfo.gridX}, ${selectionInfo.gridZ})\nColor: ${colorHex}\nTexture: ${textureLabel}`;
+    }
     this.texture.markAsDirty();
   }
 

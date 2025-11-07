@@ -6,11 +6,14 @@ import { HtmlBillboard } from './components/HtmlBillboard';
 import { AxisLabelsOverlay } from './components/AxisLabelsOverlay';
 import { SettingsPanel } from './components/SettingsPanel';
 import type { CubeSelectionInfo } from './engine/CubeField';
+import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
 import { appConfig } from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
+import type { CubeContentItem } from './types/content';
+import { loadCubeContent, resolveContentProviderId } from './content';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
@@ -143,8 +146,12 @@ export default function App() {
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
   const [axisLabels, setAxisLabels] = useState<AxisLabelDisplayState[]>([]);
+  const [contentItems, setContentItems] = useState<CubeContentItem[]>([]);
   const hasPersistedRef = useRef(false);
   const initialSourceRef = useRef<'server' | 'cookie'>('cookie');
+  const presenterRef = useRef<CubeWallPresenter | null>(null);
+  const contentItemsRef = useRef<CubeContentItem[]>([]);
+  const contentProviderId = resolveContentProviderId();
 
   useEffect(() => {
     let disposed = false;
@@ -159,8 +166,29 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const items = await loadCubeContent(contentProviderId);
+      if (cancelled) return;
+      contentItemsRef.current = items;
+      setContentItems(items);
+      presenterRef.current?.setContent(items);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [contentProviderId]);
+
   const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
     setSelection(nextSelection);
+  }, []);
+
+  const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
+    presenterRef.current = presenter;
+    if (presenter && contentItemsRef.current.length > 0) {
+      presenter.setContent(contentItemsRef.current);
+    }
   }, []);
 
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
@@ -224,6 +252,7 @@ export default function App() {
     <div className="cw-root">
       <CanvasStage
         onSelectionChange={handleSelectionChange}
+        onPresenterReady={handlePresenterReady}
         settings={settings}
         onDebug={handleDebugLine}
         onBillboardStateChange={setBillboardState}

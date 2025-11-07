@@ -13,6 +13,7 @@ import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
 import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
+import type { CubeContentItem } from '../types/content';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -31,6 +32,7 @@ export interface BillboardDisplayState {
     gridZ: number;
     colorHex: string;
     textureLabel: string;
+    item: CubeContentItem | null;
   } | null;
   onRequestClose: () => void;
 }
@@ -79,6 +81,7 @@ export class CubeWallPresenter {
     month: 'numeric',
     year: 'numeric',
   });
+  private contentItems: CubeContentItem[] = [];
 
   private updateDepthOfFieldFocus(cell: CubeCell | null): void {
     if (!this.config.depthOfFieldEnabled || !this.config.depthOfFieldAutoFocusEnabled) return;
@@ -364,6 +367,16 @@ export class CubeWallPresenter {
     this.debug(line);
   }
 
+  public setContent(items: CubeContentItem[]): void {
+    this.contentItems = items;
+    this.cubeField.setContent(items);
+    if (this.currentBillboardCell) {
+      this.updateBillboard(this.currentBillboardCell, false);
+    } else {
+      this.emitHtmlBillboardState();
+    }
+  }
+
   public start(): void {
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
@@ -376,6 +389,9 @@ export class CubeWallPresenter {
       this.cubeField.update(deltaTime, this.sceneTime);
       this.updateAutoSelection(deltaTime);
       this.billboardOverlay.update();
+      if (this.config.billboard.mode === 'html' && this.currentBillboardCell && this.currentBillboardInfo) {
+        this.emitHtmlBillboardState();
+      }
       this.scene.render();
     });
   }
@@ -561,6 +577,7 @@ export class CubeWallPresenter {
         gridZ: this.currentBillboardInfo.gridZ,
         colorHex: this.currentBillboardInfo.color.toHexString(),
         textureLabel: this.getTextureLabel(this.currentBillboardInfo.textureUrl),
+        item: this.currentBillboardCell.content ?? null,
       },
       onRequestClose: this.handleHtmlBillboardClose,
     };

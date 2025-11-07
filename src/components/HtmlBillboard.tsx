@@ -14,6 +14,25 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (char) => {
+    switch (char) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      case "'":
+        return '&#39;';
+      default:
+        return char;
+    }
+  });
+}
+
 function buildHtml(template: string, state: BillboardDisplayState): string {
   if (!state.content) return template || '';
   let html = template || '';
@@ -23,6 +42,28 @@ function buildHtml(template: string, state: BillboardDisplayState): string {
     '{{color}}': state.content.colorHex,
     '{{texture}}': state.content.textureLabel,
   };
+
+  const item = state.content.item;
+  if (item) {
+    const publishedDate = item.publishedAt ? new Date(item.publishedAt) : null;
+    const publishedLabel = publishedDate && !Number.isNaN(publishedDate.getTime()) ? publishedDate.toLocaleDateString('de-DE') : '';
+    replacements['{{title}}'] = escapeHtml(item.title ?? '');
+    replacements['{{summary}}'] = escapeHtml(item.summary ?? '');
+    replacements['{{url}}'] = escapeHtml(item.url ?? '');
+    replacements['{{source}}'] = escapeHtml(item.sourceName ?? '');
+    replacements['{{category}}'] = escapeHtml(item.category ?? '');
+    replacements['{{imageUrl}}'] = escapeHtml(item.imageUrl ?? '');
+    replacements['{{publishedAt}}'] = escapeHtml(publishedLabel);
+  } else {
+    replacements['{{title}}'] = '';
+    replacements['{{summary}}'] = '';
+    replacements['{{url}}'] = '';
+    replacements['{{source}}'] = '';
+    replacements['{{category}}'] = '';
+    replacements['{{imageUrl}}'] = '';
+    replacements['{{publishedAt}}'] = '';
+  }
+
   Object.entries(replacements).forEach(([token, value]) => {
     html = html.replaceAll(token, String(value));
   });

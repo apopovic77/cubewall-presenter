@@ -190,6 +190,7 @@ export class CubeField {
       return;
     }
 
+    cell.textureLoaded = false;
     cell.textureUrl = url;
     const material = cell.material;
     const texture = new Texture(

@@ -163,7 +163,8 @@ export const appConfig: CubeWallConfig = {
     distance: 2.2,
     angleDegrees: 45,
     mode: 'html',
-    htmlContent: '<h2>Nebula Headline</h2><p>Cube <strong>{{gridX}}, {{gridZ}}</strong> strahlt mit Textur <strong>{{texture}}</strong> und Farbcode <span class="cw-html-billboard__pill">{{color}}</span>. Hier könnte deine Subheadline stehen – zum Beispiel eine kurze Zusammenfassung oder der Hook zur Story.</p><div class="cw-html-billboard__source"><span>Quelle: Deep Space Newsdesk</span><span>&bull;</span><span>AI Wire • 06 Nov 2025</span></div>',
+    htmlContent:
+      '<div class="cw-html-billboard__meta"><span>{{source}}</span><span>{{publishedAt}}</span><span>{{category}}</span></div><h2>{{title}}</h2><p>{{summary}}</p><a class="cw-html-billboard__link" href="{{url}}" target="_blank" rel="noreferrer">Zum Artikel</a>',
   },
   axisLabels: {
     enabled: true,
