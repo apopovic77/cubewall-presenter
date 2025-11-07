@@ -1,5 +1,5 @@
 import { appConfig } from './AppConfig';
-import type { BackgroundType, BillboardMode } from './AppConfig';
+import type { AxisLabelsMode, BackgroundType, BillboardMode, DepthOfFieldBlurLevel } from './AppConfig';
 
 export interface PresenterSettings {
   gridSize: number;
@@ -20,6 +20,14 @@ export interface PresenterSettings {
   slowAutorotateEnabled: boolean;
   slowAutorotateSpeed: number;
   selectionCameraFollowEnabled: boolean;
+  depthOfFieldEnabled: boolean;
+  depthOfFieldFocusDistance: number;
+  depthOfFieldFStop: number;
+  depthOfFieldFocalLength: number;
+  depthOfFieldBlurLevel: DepthOfFieldBlurLevel;
+  depthOfFieldAutoFocusEnabled: boolean;
+  depthOfFieldAutoFocusOffset: number;
+  depthOfFieldAutoFocusSharpness: number;
   cameraRadius: number;
   flyToRadiusFactor: number;
   cameraLerpSpeed: number;
@@ -53,6 +61,14 @@ export interface PresenterSettings {
   billboardAngleDegrees: number;
   billboardMode: BillboardMode;
   billboardHtmlContent: string;
+  axisLabelsEnabled: boolean;
+  axisLabelsStartDate: string;
+  axisLabelsStepDays: number;
+  axisLabelsTemplate: string;
+  axisLabelsOffsetX: number;
+  axisLabelsOffsetY: number;
+  axisLabelsOffsetZ: number;
+  axisLabelsMode: AxisLabelsMode;
 }
 
 export const defaultPresenterSettings: PresenterSettings = {
@@ -62,7 +78,7 @@ export const defaultPresenterSettings: PresenterSettings = {
   waveAmplitudeY: appConfig.waveAmplitudeY,
   waveAmplitudeRot: appConfig.waveAmplitudeRot,
   enableHoverInteraction: true,
-  autoSelectEnabled: false,
+  autoSelectEnabled: true,
   autoSelectInterval: 6,
   interactionRadius: appConfig.interactionRadius,
   interactionLift: appConfig.interactionLift,
@@ -74,6 +90,14 @@ export const defaultPresenterSettings: PresenterSettings = {
   slowAutorotateEnabled: false,
   slowAutorotateSpeed: 0.1,
   selectionCameraFollowEnabled: true,
+  depthOfFieldEnabled: appConfig.depthOfFieldEnabled,
+  depthOfFieldFocusDistance: appConfig.depthOfFieldFocusDistance,
+  depthOfFieldFStop: appConfig.depthOfFieldFStop,
+  depthOfFieldFocalLength: appConfig.depthOfFieldFocalLength ?? 50,
+  depthOfFieldBlurLevel: appConfig.depthOfFieldBlurLevel,
+  depthOfFieldAutoFocusEnabled: appConfig.depthOfFieldAutoFocusEnabled,
+  depthOfFieldAutoFocusOffset: appConfig.depthOfFieldAutoFocusOffset,
+  depthOfFieldAutoFocusSharpness: appConfig.depthOfFieldAutoFocusSharpness ?? 1,
   cameraRadius: appConfig.camera.radius,
   flyToRadiusFactor: appConfig.camera.flyToRadiusFactor,
   cameraLerpSpeed: appConfig.camera.lerpSpeedFactor,
@@ -107,4 +131,12 @@ export const defaultPresenterSettings: PresenterSettings = {
   billboardAngleDegrees: appConfig.billboard.angleDegrees,
   billboardMode: appConfig.billboard.mode,
   billboardHtmlContent: appConfig.billboard.htmlContent,
+  axisLabelsEnabled: appConfig.axisLabels.enabled,
+  axisLabelsStartDate: appConfig.axisLabels.startDateIso,
+  axisLabelsStepDays: appConfig.axisLabels.stepDays,
+  axisLabelsTemplate: appConfig.axisLabels.template,
+  axisLabelsOffsetX: appConfig.axisLabels.offset.x,
+  axisLabelsOffsetY: appConfig.axisLabels.offset.y,
+  axisLabelsOffsetZ: appConfig.axisLabels.offset.z,
+  axisLabelsMode: appConfig.axisLabels.mode,
 };

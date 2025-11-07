@@ -10,7 +10,16 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Layer } from '@babylonjs/core/Layers/layer';
 import '@babylonjs/core/Shaders/layer.vertex';
 import '@babylonjs/core/Shaders/layer.fragment';
-import { appConfig } from '../config/AppConfig';
+import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline';
+import { DepthOfFieldEffectBlurLevel } from '@babylonjs/core/PostProcesses/depthOfFieldEffect';
+import '@babylonjs/core/Rendering/depthRendererSceneComponent';
+import '@babylonjs/core/Shaders/kernelBlur.vertex';
+import '@babylonjs/core/Shaders/kernelBlur.fragment';
+import '@babylonjs/core/Shaders/depthOfField.fragment';
+import '@babylonjs/core/Shaders/depthOfFieldMerge.fragment';
+import '@babylonjs/core/Shaders/circleOfConfusion.fragment';
+import '@babylonjs/core/Shaders/imageProcessing.fragment';
+import { appConfig, DOF_FOCUS_MIN, DOF_WORLD_TO_MM } from '../config/AppConfig';
 import type { CubeWallConfig } from '../config/AppConfig';
 
 export interface SceneControllerOptions {
@@ -29,6 +38,7 @@ export class SceneController {
   private directionalLight!: DirectionalLight;
   private fillLight: DirectionalLight | null = null;
   private gradientLayer: Layer | null = null;
+  private renderingPipeline: DefaultRenderingPipeline | null = null;
 
   constructor({ canvas, config }: SceneControllerOptions) {
     this.config = config ?? appConfig;
@@ -37,13 +47,17 @@ export class SceneController {
       stencil: true,
       antialias: true,
     });
+    this.engine.enableOfflineSupport = false;
+    this.engine.disableShaderCache = true;
     this.engine.setHardwareScalingLevel(1 / window.devicePixelRatio);
 
     this.scene = new Scene(this.engine);
     this.camera = this.createCamera(canvas);
     this.createLights();
+    this.setupRenderingPipeline();
     this.updateLightingFromConfig();
     this.updateBackgroundFromConfig();
+    this.updateDepthOfFieldFromConfig();
 
     const onResize = () => this.engine.resize();
     window.addEventListener('resize', onResize);
@@ -84,6 +98,10 @@ export class SceneController {
 
   public getCamera(): ArcRotateCamera {
     return this.camera;
+  }
+
+  public getRenderingPipeline(): DefaultRenderingPipeline | null {
+    return this.renderingPipeline;
   }
 
   public updateCameraRadius(radius: number): void {
@@ -167,6 +185,51 @@ export class SceneController {
     return dynamicTexture;
   }
 
+  private setupRenderingPipeline(): void {
+    if (this.renderingPipeline) {
+      this.renderingPipeline.dispose();
+    }
+    this.renderingPipeline = new DefaultRenderingPipeline('cwDefaultPipeline', true, this.scene, [this.camera]);
+    this.renderingPipeline.samples = 1;
+  }
+
+  public updateDepthOfFieldFromConfig(): void {
+    if (!this.renderingPipeline) {
+      this.setupRenderingPipeline();
+    }
+    if (!this.renderingPipeline) return;
+
+    this.renderingPipeline.depthOfFieldEnabled = this.config.depthOfFieldEnabled;
+    if (this.config.depthOfFieldEnabled) {
+      this.scene.enableDepthRenderer(this.camera, false);
+    } else {
+      if (typeof (this.scene as Scene & { disableDepthRenderer?: (camera?: ArcRotateCamera) => void }).disableDepthRenderer === 'function') {
+        (this.scene as Scene & { disableDepthRenderer?: (camera?: ArcRotateCamera) => void }).disableDepthRenderer?.(this.camera);
+      }
+    }
+    const blurLevelMap: Record<string, DepthOfFieldEffectBlurLevel> = {
+      low: DepthOfFieldEffectBlurLevel.Low,
+      medium: DepthOfFieldEffectBlurLevel.Medium,
+      high: DepthOfFieldEffectBlurLevel.High,
+    };
+    this.renderingPipeline.depthOfFieldBlurLevel = blurLevelMap[this.config.depthOfFieldBlurLevel] ?? DepthOfFieldEffectBlurLevel.Medium;
+
+    if (this.renderingPipeline.depthOfField) {
+      this.renderingPipeline.depthOfField.focusDistance = Math.max(DOF_FOCUS_MIN, this.config.depthOfFieldFocusDistance) * DOF_WORLD_TO_MM;
+      this.renderingPipeline.depthOfField.fStop = this.config.depthOfFieldFStop;
+      this.renderingPipeline.depthOfField.focalLength = this.config.depthOfFieldFocalLength;
+    }
+  }
+
+  public setDepthOfFieldFocusDistance(distance: number, overrideFStop?: number): void {
+    this.config.depthOfFieldFocusDistance = Math.max(DOF_FOCUS_MIN, distance);
+    if (this.renderingPipeline?.depthOfField) {
+      this.renderingPipeline.depthOfField.focusDistance = this.config.depthOfFieldFocusDistance * DOF_WORLD_TO_MM;
+      const fStop = overrideFStop ?? this.config.depthOfFieldFStop;
+      this.renderingPipeline.depthOfField.fStop = fStop;
+    }
+  }
+
   public dispose(): void {
     this.disposeHandlers.forEach((dispose) => dispose());
     if (this.gradientLayer) {
@@ -174,6 +237,7 @@ export class SceneController {
       this.gradientLayer.dispose();
       this.gradientLayer = null;
     }
+    this.renderingPipeline?.dispose();
     this.scene.dispose();
     this.engine.dispose();
   }

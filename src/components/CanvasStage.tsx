@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import type { CubeSelectionInfo } from '../engine/CubeField';
 import { CubeWallPresenter } from '../engine/CubeWallPresenter';
 import type { PresenterSettings } from '../config/PresenterSettings';
-import type { BillboardDisplayState } from '../engine/CubeWallPresenter';
+import type { AxisLabelDisplayState, BillboardDisplayState } from '../engine/CubeWallPresenter';
 
 export interface CanvasStageProps {
   onSelectionChange?: (selection: CubeSelectionInfo | null) => void;
@@ -11,9 +11,10 @@ export interface CanvasStageProps {
   settings: PresenterSettings;
   onDebug?: (line: string) => void;
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
+  onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
 }
 
-export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onDebug, onBillboardStateChange }: CanvasStageProps) {
+export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onDebug, onBillboardStateChange, onAxisLabelsChange }: CanvasStageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const presenterRef = useRef<CubeWallPresenter | null>(null);
 
@@ -35,6 +36,7 @@ export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onD
       onSelectionChange,
       onDebug,
       onBillboardStateChange,
+      onAxisLabelsChange,
     });
     presenterRef.current = presenter;
     onPresenterReady?.(presenter);
@@ -52,8 +54,9 @@ export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onD
       presenterRef.current = null;
       onPresenterReady?.(null);
       onBillboardStateChange?.(null);
+      onAxisLabelsChange?.([]);
     };
-  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange]);
+  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange, onAxisLabelsChange]);
 
   useEffect(() => {
     presenterRef.current?.applySettings(settings);

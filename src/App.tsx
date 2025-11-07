@@ -3,12 +3,13 @@ import { CanvasStage } from './components/CanvasStage';
 import { SelectionOverlay } from './components/SelectionOverlay';
 import { DebugOverlay } from './components/DebugOverlay';
 import { HtmlBillboard } from './components/HtmlBillboard';
+import { AxisLabelsOverlay } from './components/AxisLabelsOverlay';
 import { SettingsPanel } from './components/SettingsPanel';
 import type { CubeSelectionInfo } from './engine/CubeField';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
 import { appConfig } from './config/AppConfig';
-import type { BillboardDisplayState } from './engine/CubeWallPresenter';
+import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
@@ -92,8 +93,31 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.billboard.heightOffset = settings.billboardHeightOffset;
   appConfig.billboard.distance = settings.billboardDistance;
   appConfig.billboard.angleDegrees = settings.billboardAngleDegrees;
+  appConfig.slowAutorotateEnabled = settings.slowAutorotateEnabled;
+  appConfig.slowAutorotateSpeed = settings.slowAutorotateSpeed;
+  appConfig.selectionCameraFollowEnabled = settings.selectionCameraFollowEnabled;
+  appConfig.depthOfFieldEnabled = settings.depthOfFieldEnabled;
+  appConfig.depthOfFieldFocusDistance = settings.depthOfFieldFocusDistance;
+  appConfig.depthOfFieldFStop = settings.depthOfFieldFStop;
+  appConfig.depthOfFieldFocalLength = settings.depthOfFieldFocalLength;
+  appConfig.depthOfFieldBlurLevel = settings.depthOfFieldBlurLevel;
+  appConfig.depthOfFieldAutoFocusEnabled = settings.depthOfFieldAutoFocusEnabled;
+  appConfig.depthOfFieldAutoFocusOffset = settings.depthOfFieldAutoFocusOffset;
+  appConfig.depthOfFieldAutoFocusSharpness = settings.depthOfFieldAutoFocusSharpness;
+  if (settings.depthOfFieldAutoFocusEnabled) {
+    appConfig.depthOfFieldFocusDistance = settings.depthOfFieldFocusDistance;
+    appConfig.depthOfFieldFStop = settings.depthOfFieldFStop;
+  }
   appConfig.billboard.mode = settings.billboardMode;
   appConfig.billboard.htmlContent = settings.billboardHtmlContent;
+  appConfig.axisLabels.enabled = settings.axisLabelsEnabled;
+  appConfig.axisLabels.mode = settings.axisLabelsMode;
+  appConfig.axisLabels.startDateIso = settings.axisLabelsStartDate;
+  appConfig.axisLabels.stepDays = settings.axisLabelsStepDays;
+  appConfig.axisLabels.template = settings.axisLabelsTemplate;
+  appConfig.axisLabels.offset.x = settings.axisLabelsOffsetX;
+  appConfig.axisLabels.offset.y = settings.axisLabelsOffsetY;
+  appConfig.axisLabels.offset.z = settings.axisLabelsOffsetZ;
 }
 
 export default function App() {
@@ -103,6 +127,7 @@ export default function App() {
   const [panelPosition, setPanelPosition] = useState({ x: 24, y: 24 });
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
+  const [axisLabels, setAxisLabels] = useState<AxisLabelDisplayState[]>([]);
 
   const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
     setSelection(nextSelection);
@@ -122,6 +147,18 @@ export default function App() {
     setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
     syncConfigWithSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (!settings.axisLabelsEnabled) {
+      setAxisLabels([]);
+    }
+  }, [settings.axisLabelsEnabled]);
+
+  useEffect(() => {
+    if (settings.axisLabelsMode !== 'overlay') {
+      setAxisLabels([]);
+    }
+  }, [settings.axisLabelsMode]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -144,9 +181,13 @@ export default function App() {
         settings={settings}
         onDebug={handleDebugLine}
         onBillboardStateChange={setBillboardState}
+        onAxisLabelsChange={setAxisLabels}
       />
       {settings.billboardMode === 'html' && billboardState && (
         <HtmlBillboard state={billboardState} settings={settings} />
+      )}
+      {settings.axisLabelsEnabled && axisLabels.length > 0 && (
+        <AxisLabelsOverlay labels={axisLabels} />
       )}
       {settings.showSelectionOverlay && (
         <SelectionOverlay selection={selection} />
@@ -162,6 +203,6 @@ export default function App() {
       {settings.showDebugOverlay && (
         <DebugOverlay lines={debugLines} />
       )}
-    </div>
+      </div>
   );
 }

@@ -6,12 +6,15 @@ import { SceneController } from './SceneController';
 import { CubeField } from './CubeField';
 import type { CubeSelectionInfo } from './CubeField';
 import type { CubeCell } from './CubeField';
-import { appConfig } from '../config/AppConfig';
+import { appConfig, DOF_WORLD_TO_MM } from '../config/AppConfig';
 import type { CubeWallConfig } from '../config/AppConfig';
 import type { PresenterSettings } from '../config/PresenterSettings';
 import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
 import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
+import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface BillboardDisplayState {
   worldPosition: Vector3;
@@ -31,12 +34,20 @@ export interface BillboardDisplayState {
   onRequestClose: () => void;
 }
 
+export interface AxisLabelDisplayState {
+  id: string;
+  label: string;
+  screenX: number;
+  screenY: number;
+}
+
 export interface CubeWallPresenterOptions {
   canvas: HTMLCanvasElement;
   config?: CubeWallConfig;
   onSelectionChange?: (selection: CubeSelectionInfo | null) => void;
   onDebug?: (line: string) => void;
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
+  onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
 }
 
 export class CubeWallPresenter {
@@ -49,6 +60,8 @@ export class CubeWallPresenter {
   private readonly debug?: (line: string) => void;
   private readonly billboardOverlay: BillboardOverlay;
   private readonly billboardStateChange?: (state: BillboardDisplayState | null) => void;
+  private readonly axisLabelStateChange?: (labels: AxisLabelDisplayState[]) => void;
+  private readonly axis3DLabelManager: Axis3DLabelManager;
   private currentBillboardInfo: CubeSelectionInfo | null = null;
   private currentBillboardCell: CubeCell | null = null;
   private sceneTime = 0;
@@ -57,8 +70,29 @@ export class CubeWallPresenter {
   private autoSelectEnabled = false;
   private autoSelectInterval = 6;
   private autoSelectElapsed = 0;
+  private axisLabelAnchors: Vector3[] = [];
+  private axisLabelStartDateMs = Number.NaN;
+  private readonly axisLabelDateFormatter = new Intl.DateTimeFormat('de-DE', {
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric',
+  });
 
-  constructor({ canvas, config = appConfig, onSelectionChange, onDebug, onBillboardStateChange }: CubeWallPresenterOptions) {
+  private updateDepthOfFieldFocus(cell: CubeCell | null): void {
+    if (!this.config.depthOfFieldEnabled || !this.config.depthOfFieldAutoFocusEnabled) return;
+    const targetCell = cell ?? this.cubeField.getCurrentSelection();
+    if (!targetCell) return;
+    const camera = this.sceneController.getCamera();
+    const distance = camera.position.subtract(targetCell.mesh.getAbsolutePosition()).length();
+    const adjustedDistance = distance + this.config.depthOfFieldAutoFocusOffset;
+    const sharpness = Math.max(0.1, this.config.depthOfFieldAutoFocusSharpness);
+    const effectiveFStop = Math.max(0.1, this.config.depthOfFieldFStop / sharpness);
+    this.config.depthOfFieldFocusDistance = adjustedDistance;
+    this.config.depthOfFieldFStop = effectiveFStop;
+    this.sceneController.setDepthOfFieldFocusDistance(adjustedDistance, effectiveFStop);
+  }
+
+  constructor({ canvas, config = appConfig, onSelectionChange, onDebug, onBillboardStateChange, onAxisLabelsChange }: CubeWallPresenterOptions) {
     this.config = config;
     this.sceneController = new SceneController({ canvas, config: this.config });
     this.engine = this.sceneController.getEngine();
@@ -67,7 +101,13 @@ export class CubeWallPresenter {
     this.selectionChange = onSelectionChange;
     this.debug = onDebug;
     this.billboardStateChange = onBillboardStateChange;
+    this.axisLabelStateChange = onAxisLabelsChange;
     this.setupPointerInteractions();
+
+    this.axis3DLabelManager = new Axis3DLabelManager(this.scene);
+
+    this.refreshAxisAnchors();
+    this.updateAxisLabelStartDate();
 
     this.billboardOverlay = new BillboardOverlay({
       scene: this.scene,
@@ -78,6 +118,9 @@ export class CubeWallPresenter {
         this.updateBillboard(null, false);
       },
     });
+
+    this.emitAxisLabelsState();
+    this.updateAxis3DLabels();
 
     // Debug camera and scene
     setTimeout(() => {
@@ -161,6 +204,15 @@ export class CubeWallPresenter {
             } else {
               this.logDebug(`POINTERUP -> manual camera move (drag distance ${distance.toFixed(2)})`);
               this.billboardOverlay.captureCurrentCameraState();
+              if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
+                const dof = this.sceneController.getRenderingPipeline()?.depthOfField;
+                if (dof) {
+                  const currentDistance = dof.focusDistance / DOF_WORLD_TO_MM;
+                  this.config.depthOfFieldFocusDistance = currentDistance;
+                  this.config.depthOfFieldFStop = dof.fStop;
+                  this.updateDepthOfFieldFocus(null);
+                }
+              }
             }
           }
           pointerDownPos = null;
@@ -210,6 +262,7 @@ export class CubeWallPresenter {
     }
     this.updateBillboard(alreadySelected ? null : cell);
     this.autoSelectElapsed = 0;
+    this.updateDepthOfFieldFocus(alreadySelected ? null : cell);
   }
 
   private updateBillboard(cell: CubeCell | null, animate = true): void {
@@ -318,6 +371,8 @@ export class CubeWallPresenter {
       this.updateAutoSelection(deltaTime);
       this.billboardOverlay.update(deltaTime);
       this.emitHtmlBillboardState();
+      this.emitAxisLabelsState();
+      this.updateAxis3DLabels();
       this.scene.render();
     });
   }
@@ -328,6 +383,7 @@ export class CubeWallPresenter {
       this.config.gridSize = targetGridSize;
       this.cubeField.rebuild(this.config.gridSize);
       this.updateBillboard(null, false);
+      this.refreshAxisAnchors();
     }
 
     this.config.waveSpeed = settings.waveSpeed;
@@ -378,10 +434,29 @@ export class CubeWallPresenter {
     this.config.billboard.angleDegrees = settings.billboardAngleDegrees;
     this.config.billboard.mode = settings.billboardMode;
     this.config.billboard.htmlContent = settings.billboardHtmlContent;
+    this.config.axisLabels.enabled = settings.axisLabelsEnabled;
+    this.config.axisLabels.startDateIso = settings.axisLabelsStartDate;
+    this.config.axisLabels.stepDays = Math.max(1, settings.axisLabelsStepDays);
+    this.config.axisLabels.template = settings.axisLabelsTemplate;
+    this.config.axisLabels.offset.x = settings.axisLabelsOffsetX;
+    this.config.axisLabels.offset.y = settings.axisLabelsOffsetY;
+    this.config.axisLabels.offset.z = settings.axisLabelsOffsetZ;
+    this.updateAxisLabelStartDate();
+    if (this.config.axisLabels.enabled && this.axisLabelAnchors.length === 0) {
+      this.refreshAxisAnchors();
+    }
+    if (!this.config.axisLabels.enabled) {
+      this.axisLabelStateChange?.([]);
+    }
 
     this.sceneController.updateLightingFromConfig();
     this.sceneController.updateBackgroundFromConfig();
+    this.sceneController.updateDepthOfFieldFromConfig();
+    if (this.config.depthOfFieldAutoFocusEnabled) {
+      this.updateDepthOfFieldFocus(null);
+    }
     this.emitHtmlBillboardState();
+    this.emitAxisLabelsState();
   }
 
   public dispose(): void {
@@ -390,6 +465,8 @@ export class CubeWallPresenter {
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
     this.sceneController.dispose();
+    this.axisLabelStateChange?.([]);
+    this.axis3DLabelManager.dispose();
   }
 
   private updateAutoSelection(deltaTime: number): void {
@@ -415,6 +492,7 @@ export class CubeWallPresenter {
       this.cubeField.triggerRipple(cell);
     }
     this.updateBillboard(cell);
+    this.updateDepthOfFieldFocus(cell);
   }
 
   private readonly handleHtmlBillboardClose = () => {
@@ -484,6 +562,123 @@ export class CubeWallPresenter {
     };
 
     this.billboardStateChange(state);
+  }
+
+  private computeAxisLabelData(): AxisLabelData[] {
+    if (!this.config.axisLabels.enabled || this.axisLabelAnchors.length === 0) {
+      return [];
+    }
+
+    const offsetVector = new Vector3(
+      this.config.axisLabels.offset.x,
+      this.config.axisLabels.offset.y,
+      this.config.axisLabels.offset.z,
+    );
+
+    const template = this.config.axisLabels.template || '{{row1}}';
+    const startDateMs = this.axisLabelStartDateMs;
+    const hasValidDate = Number.isFinite(startDateMs);
+
+    const labels: AxisLabelData[] = [];
+
+    for (let index = 0; index < this.axisLabelAnchors.length; index += 1) {
+      const anchor = this.axisLabelAnchors[index];
+      const worldPosition = anchor.add(offsetVector);
+
+      let labelText = template;
+      labelText = labelText.split('{{row}}').join(index.toString());
+      labelText = labelText.split('{{row1}}').join((index + 1).toString());
+
+      let dateText = '';
+      if (hasValidDate) {
+        const date = new Date(startDateMs + index * this.config.axisLabels.stepDays * DAY_MS);
+        if (!Number.isNaN(date.getTime())) {
+          dateText = this.axisLabelDateFormatter.format(date);
+        }
+      }
+      labelText = labelText.split('{{date}}').join(dateText);
+
+      if (!labelText.trim()) {
+        // eslint-disable-next-line no-continue
+        continue;
+      }
+
+      labels.push({
+        id: `axis-${index}`,
+        text: labelText,
+        worldPosition,
+      });
+    }
+
+    return labels;
+  }
+
+  private refreshAxisAnchors(): void {
+    this.axisLabelAnchors = this.cubeField.getRowAnchors();
+    this.updateAxis3DLabels();
+  }
+
+  private updateAxisLabelStartDate(): void {
+    const parsed = Date.parse(this.config.axisLabels.startDateIso);
+    this.axisLabelStartDateMs = Number.isNaN(parsed) ? Number.NaN : parsed;
+  }
+
+  private emitAxisLabelsState(): void {
+    if (!this.axisLabelStateChange) return;
+
+    if (!this.config.axisLabels.enabled || this.config.axisLabels.mode !== 'overlay') {
+      this.axisLabelStateChange([]);
+      return;
+    }
+    const data = this.computeAxisLabelData();
+    if (!data.length) {
+      this.axisLabelStateChange([]);
+      return;
+    }
+
+    const engine = this.scene.getEngine();
+    const canvas = engine.getRenderingCanvas();
+    if (!canvas) {
+      this.axisLabelStateChange([]);
+      return;
+    }
+
+    const camera = this.sceneController.getCamera();
+    const transform = camera.getTransformationMatrix();
+    const viewport = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+    const rect = canvas.getBoundingClientRect();
+
+    const labels: AxisLabelDisplayState[] = [];
+
+    data.forEach((label) => {
+      const projected = Vector3.Project(label.worldPosition, Matrix.Identity(), transform, viewport);
+      if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || projected.z < 0 || projected.z > 1) {
+        return;
+      }
+      const normalizedX = (projected.x - viewport.x) / viewport.width;
+      const normalizedY = (projected.y - viewport.y) / viewport.height;
+      if (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1) {
+        return;
+      }
+      labels.push({
+        id: label.id,
+        label: label.text,
+        screenX: rect.left + normalizedX * rect.width,
+        screenY: rect.top + normalizedY * rect.height,
+      });
+    });
+
+    this.axisLabelStateChange(labels);
+  }
+
+  private updateAxis3DLabels(): void {
+    if (!this.config.axisLabels.enabled || this.config.axisLabels.mode !== '3d') {
+      this.axis3DLabelManager.update([], this.sceneController.getCamera().position);
+      return;
+    }
+
+    const data = this.computeAxisLabelData();
+    this.axis3DLabelManager.update(data, this.sceneController.getCamera().position);
   }
 
   private getTextureLabel(url: string | null): string {

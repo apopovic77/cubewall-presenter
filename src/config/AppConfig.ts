@@ -1,7 +1,11 @@
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 
 export type BackgroundType = 'solid' | 'gradient';
+export type DepthOfFieldBlurLevel = 'low' | 'medium' | 'high';
+export const DOF_FOCUS_MIN = 5;
+export const DOF_WORLD_TO_MM = 1000;
 export type BillboardMode = '3d' | 'html';
+export type AxisLabelsMode = 'overlay' | '3d';
 
 export interface CubeWallConfig {
   maxGridSize: number;
@@ -29,6 +33,14 @@ export interface CubeWallConfig {
   slowAutorotateEnabled: boolean;
   slowAutorotateSpeed: number;
   selectionCameraFollowEnabled: boolean;
+  depthOfFieldEnabled: boolean;
+  depthOfFieldFocusDistance: number;
+  depthOfFieldFStop: number;
+  depthOfFieldFocalLength: number;
+  depthOfFieldBlurLevel: DepthOfFieldBlurLevel;
+  depthOfFieldAutoFocusEnabled: boolean;
+  depthOfFieldAutoFocusOffset: number;
+  depthOfFieldAutoFocusSharpness: number;
   camera: {
     radius: number;
     minRadius: number;
@@ -65,6 +77,14 @@ export interface CubeWallConfig {
     mode: BillboardMode;
     htmlContent: string;
   };
+  axisLabels: {
+    enabled: boolean;
+    mode: AxisLabelsMode;
+    startDateIso: string;
+    stepDays: number;
+    template: string;
+    offset: { x: number; y: number; z: number };
+  };
 }
 
 export const appConfig: CubeWallConfig = {
@@ -72,7 +92,7 @@ export const appConfig: CubeWallConfig = {
   gridSize: 25,
   cubeSize: 1.0,
   cubeSpacing: 0.15,
-  selectedCubeLift: 1.0,
+  selectedCubeLift: 1.6,
   selectedCubePopOutDistance: 0.5,
   selectedCubeRotation: Math.PI / 4,
   waveAmplitudeY: 0.15,
@@ -99,8 +119,16 @@ export const appConfig: CubeWallConfig = {
     'https://assets.babylonjs.com/textures/floor.png',
   ],
   slowAutorotateEnabled: false,
-  slowAutorotateSpeed: 0.1,
+  slowAutorotateSpeed: 0.2,
   selectionCameraFollowEnabled: true,
+  depthOfFieldEnabled: false,
+  depthOfFieldFocusDistance: 150,
+  depthOfFieldFStop: 2.8,
+  depthOfFieldFocalLength: 60,
+  depthOfFieldBlurLevel: 'medium',
+  depthOfFieldAutoFocusEnabled: true,
+  depthOfFieldAutoFocusOffset: 0,
+  depthOfFieldAutoFocusSharpness: 1,
   camera: {
     radius: 75,
     minRadius: 2,
@@ -118,23 +146,31 @@ export const appConfig: CubeWallConfig = {
   ambientLightColorHex: '#ffffff',
   ambientLightIntensity: 0.35,
   directionalLightColorHex: '#ffffff',
-  directionalLightIntensity: 0.8,
+  directionalLightIntensity: 1.2,
   directionalLightDirection: { x: 0.5, y: -1.0, z: 0.3 },
   fillLightEnabled: true,
   fillLightColorHex: '#8faaff',
   fillLightIntensity: 0.4,
   fillLightDirection: { x: 0, y: 1, z: 0 },
   background: {
-    type: 'solid',
+    type: 'gradient',
     solidColorHex: '#030308',
-    gradientTopHex: '#102040',
-    gradientBottomHex: '#050510',
+    gradientTopHex: '#648ae3',
+    gradientBottomHex: '#b3b3ea',
   },
   billboard: {
     heightOffset: 1.8,
     distance: 2.2,
     angleDegrees: 45,
-    mode: '3d',
+    mode: 'html',
     htmlContent: '<h2>Nebula Headline</h2><p>Cube <strong>{{gridX}}, {{gridZ}}</strong> strahlt mit Textur <strong>{{texture}}</strong> und Farbcode <span class="cw-html-billboard__pill">{{color}}</span>. Hier könnte deine Subheadline stehen – zum Beispiel eine kurze Zusammenfassung oder der Hook zur Story.</p><div class="cw-html-billboard__source"><span>Quelle: Deep Space Newsdesk</span><span>&bull;</span><span>AI Wire • 06 Nov 2025</span></div>',
+  },
+  axisLabels: {
+    enabled: true,
+    mode: 'overlay',
+    startDateIso: '2025-10-01',
+    stepDays: 1,
+    template: '{{date}}',
+    offset: { x: -1.4, y: 0.5, z: 0 },
   },
 };

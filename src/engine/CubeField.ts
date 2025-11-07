@@ -152,6 +152,17 @@ export class CubeField {
     this.selection = null;
   }
 
+  public getRowAnchors(): Vector3[] {
+    const anchors: Vector3[] = [];
+    for (let z = 0; z < this.config.gridSize; z += 1) {
+      const cell = this.cubes.find((c) => c.gridZ === z && c.gridX === 0);
+      if (cell) {
+        anchors.push(cell.basePosition.clone());
+      }
+    }
+    return anchors;
+  }
+
   private generateDynamicImageUrls(count: number): void {
     this.dynamicImageUrls = [];
     const timestamp = Date.now();
@@ -261,7 +272,7 @@ export class CubeField {
       this.selection.selectionProgress = 0;
     }
     this.cubes.forEach((cube) => {
-      cube.material.emissiveColor = cube === this.selection ? Color3.Black() : this.config.tintColor.clone();
+      cube.material.emissiveColor = cube === this.selection ? this.config.tintColor.clone() : Color3.Black();
     });
   }
 
