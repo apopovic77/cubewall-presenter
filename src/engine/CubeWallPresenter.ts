@@ -365,14 +365,15 @@ export class CubeWallPresenter {
   public start(): void {
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
-      const deltaTime = this.engine.getDeltaTime() / 1000;
+      let deltaTime = this.engine.getDeltaTime() / 1000;
+      if (deltaTime > 0.2) {
+        deltaTime = 0.016;
+        this.sceneTime = 0;
+      }
       this.sceneTime += deltaTime * this.config.waveSpeed;
       this.cubeField.update(deltaTime, this.sceneTime);
       this.updateAutoSelection(deltaTime);
-      this.billboardOverlay.update();
-      this.emitHtmlBillboardState();
-      this.emitAxisLabelsState();
-      this.updateAxis3DLabels();
+      this.billboardOverlay.update(deltaTime);
       this.scene.render();
     });
   }

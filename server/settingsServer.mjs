@@ -17,6 +17,7 @@ async function ensureDataFile() {
     await fs.access(DATA_FILE);
   } catch (error) {
     await fs.writeFile(DATA_FILE, '{}', 'utf8');
+    console.log(`[SettingsServer] Created data store at ${DATA_FILE}`);
   }
 }
 
@@ -44,11 +45,12 @@ app.put('/settings', async (req, res) => {
   await ensureDataFile();
   const incoming = req.body ?? {};
   await writeSettings(incoming);
+  console.log('[SettingsServer] Settings updated');
   res.status(204).send();
 });
 
 const PORT = process.env.PORT ?? 5001;
 app.listen(PORT, () => {
-  console.log(`Settings server running on http://localhost:${PORT}/settings`);
+  console.log(`[SettingsServer] Listening on http://0.0.0.0:${PORT}/settings`);
 });
 

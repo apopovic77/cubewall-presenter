@@ -1,14 +1,30 @@
 import type { PresenterSettings } from '../config/PresenterSettings';
 
-const SETTINGS_ENDPOINT = import.meta.env.VITE_SETTINGS_API_URL ?? 'http://localhost:5001/settings';
+function resolveSettingsEndpoint(): string {
+  const explicitEndpoint = import.meta.env.VITE_SETTINGS_API_URL;
+  if (explicitEndpoint && explicitEndpoint.length > 0) {
+    return explicitEndpoint;
+  }
+
+  if (import.meta.env.DEV) {
+    return 'http://localhost:5001/settings';
+  }
+
+  if (typeof window !== 'undefined' && window.location) {
+    return `${window.location.origin}/settings`;
+  }
+
+  return '/settings';
+}
 
 function isValidSettings(payload: unknown): payload is PresenterSettings {
   return typeof payload === 'object' && payload !== null;
 }
 
 export async function loadServerSettings(): Promise<PresenterSettings | null> {
+  const endpoint = resolveSettingsEndpoint();
   try {
-    const response = await fetch(SETTINGS_ENDPOINT, { cache: 'no-store' });
+    const response = await fetch(endpoint, { cache: 'no-store' });
     if (!response.ok) return null;
     const data = await response.json();
     if (isValidSettings(data)) {
@@ -22,8 +38,9 @@ export async function loadServerSettings(): Promise<PresenterSettings | null> {
 }
 
 export async function saveServerSettings(settings: PresenterSettings): Promise<void> {
+  const endpoint = resolveSettingsEndpoint();
   try {
-    await fetch(SETTINGS_ENDPOINT, {
+    await fetch(endpoint, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
