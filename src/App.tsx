@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CanvasStage } from './components/CanvasStage';
 import { SelectionOverlay } from './components/SelectionOverlay';
 import { DebugOverlay } from './components/DebugOverlay';
@@ -10,6 +10,7 @@ import { defaultPresenterSettings, type PresenterSettings } from './config/Prese
 import { getCookie, setCookie } from './utils/cookies';
 import { appConfig } from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
+import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
@@ -30,10 +31,9 @@ function sanitizeSettings(raw: unknown): PresenterSettings {
   return sanitized;
 }
 
-function loadInitialSettings(): PresenterSettings {
+function loadCookieSettings(): PresenterSettings {
   const cookieValue = getCookie(SETTINGS_COOKIE_KEY);
   if (!cookieValue) {
-    syncConfigWithSettings(defaultPresenterSettings);
     return { ...defaultPresenterSettings };
   }
   try {
@@ -42,13 +42,28 @@ function loadInitialSettings(): PresenterSettings {
     if (!sanitized.billboardHtmlContent || sanitized.billboardHtmlContent === LEGACY_HTML_CONTENT) {
       sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
     }
-    syncConfigWithSettings(sanitized);
     return sanitized;
   } catch (error) {
     console.warn('[CubeWallPresenter] Failed to parse settings cookie – falling back to defaults.', error);
-    syncConfigWithSettings(defaultPresenterSettings);
     return { ...defaultPresenterSettings };
   }
+}
+
+interface InitialSettingsResult {
+  settings: PresenterSettings;
+  fromServer: boolean;
+}
+
+async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
+  const serverSettings = await loadServerSettings();
+  if (serverSettings) {
+    const sanitized = sanitizeSettings(serverSettings);
+    if (!sanitized.billboardHtmlContent || sanitized.billboardHtmlContent === LEGACY_HTML_CONTENT) {
+      sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
+    }
+    return { settings: sanitized, fromServer: true };
+  }
+  return { settings: loadCookieSettings(), fromServer: false };
 }
 
 function syncConfigWithSettings(settings: PresenterSettings): void {
@@ -122,19 +137,34 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
 
 export default function App() {
   const [selection, setSelection] = useState<CubeSelectionInfo | null>(null);
-  const [settings, setSettings] = useState<PresenterSettings>(() => loadInitialSettings());
+  const [settings, setSettings] = useState<PresenterSettings | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [panelPosition, setPanelPosition] = useState({ x: 24, y: 24 });
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
   const [axisLabels, setAxisLabels] = useState<AxisLabelDisplayState[]>([]);
+  const hasPersistedRef = useRef(false);
+  const initialSourceRef = useRef<'server' | 'cookie'>('cookie');
+
+  useEffect(() => {
+    let disposed = false;
+    (async () => {
+      const { settings: initial, fromServer } = await loadInitialSettingsAsync();
+      if (disposed) return;
+      initialSourceRef.current = fromServer ? 'server' : 'cookie';
+      setSettings(initial);
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
     setSelection(nextSelection);
   }, []);
 
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
-    setSettings((prev) => ({ ...prev, ...update }));
+    setSettings((prev) => (prev ? { ...prev, ...update } : prev));
   }, []);
 
   const handleDebugLine = useCallback((line: string) => {
@@ -144,21 +174,27 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
+    if (!settings) return;
     syncConfigWithSettings(settings);
+    setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
+    const shouldPersist = hasPersistedRef.current || initialSourceRef.current === 'cookie';
+    if (shouldPersist) {
+      void saveServerSettings(settings);
+    }
+    hasPersistedRef.current = true;
   }, [settings]);
 
   useEffect(() => {
-    if (!settings.axisLabelsEnabled) {
+    if (!settings?.axisLabelsEnabled) {
       setAxisLabels([]);
     }
-  }, [settings.axisLabelsEnabled]);
+  }, [settings?.axisLabelsEnabled]);
 
   useEffect(() => {
-    if (settings.axisLabelsMode !== 'overlay') {
+    if (settings?.axisLabelsMode !== 'overlay') {
       setAxisLabels([]);
     }
-  }, [settings.axisLabelsMode]);
+  }, [settings?.axisLabelsMode]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -174,6 +210,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  if (!settings) {
+    return (
+      <div className="cw-root">
+        <div className="cw-loading">
+          <p>Loading presenter settings…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="cw-root">
       <CanvasStage
@@ -186,7 +232,7 @@ export default function App() {
       {settings.billboardMode === 'html' && billboardState && (
         <HtmlBillboard state={billboardState} settings={settings} />
       )}
-      {settings.axisLabelsEnabled && axisLabels.length > 0 && (
+      {settings.axisLabelsEnabled && settings.axisLabelsMode === 'overlay' && axisLabels.length > 0 && (
         <AxisLabelsOverlay labels={axisLabels} />
       )}
       {settings.showSelectionOverlay && (

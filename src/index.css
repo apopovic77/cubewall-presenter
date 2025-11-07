@@ -33,6 +33,19 @@ body {
   height: 100%;
 }
 
+.cw-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(220, 230, 255, 0.85);
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  backdrop-filter: blur(12px);
+}
+
 .cw-canvas {
   display: block;
   width: 100%;

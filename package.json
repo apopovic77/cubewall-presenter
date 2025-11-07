@@ -7,12 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "settings-server": "node server/settingsServer.mjs"
   },
   "dependencies": {
     "@babylonjs/core": "^8.9.0",
     "@babylonjs/gui": "^8.9.0",
     "@babylonjs/loaders": "^8.9.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
     "framer-motion": "^12.10.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

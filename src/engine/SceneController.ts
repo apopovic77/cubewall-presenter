@@ -48,7 +48,6 @@ export class SceneController {
       antialias: true,
     });
     this.engine.enableOfflineSupport = false;
-    this.engine.disableShaderCache = true;
     this.engine.setHardwareScalingLevel(1 / window.devicePixelRatio);
 
     this.scene = new Scene(this.engine);
