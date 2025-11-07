@@ -373,7 +373,7 @@ export class CubeWallPresenter {
       this.sceneTime += deltaTime * this.config.waveSpeed;
       this.cubeField.update(deltaTime, this.sceneTime);
       this.updateAutoSelection(deltaTime);
-      this.billboardOverlay.update(deltaTime);
+      this.billboardOverlay.update();
       this.scene.render();
     });
   }

@@ -56,7 +56,9 @@ export class SceneController {
     this.setupRenderingPipeline();
     this.updateLightingFromConfig();
     this.updateBackgroundFromConfig();
-    this.updateDepthOfFieldFromConfig();
+    this.scene.onAfterRenderObservable.addOnce(() => {
+      this.updateDepthOfFieldFromConfig();
+    });
 
     const onResize = () => this.engine.resize();
     window.addEventListener('resize', onResize);
