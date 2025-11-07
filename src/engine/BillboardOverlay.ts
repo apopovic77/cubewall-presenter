@@ -149,7 +149,7 @@ export class BillboardOverlay {
     }
   }
 
-  public update(deltaTime: number): void {
+  public update(): void {
     const shouldShowPlane = this.config.billboard.mode === '3d' && !!this.selectedCell;
     if (this.plane.isEnabled() !== shouldShowPlane) {
       this.plane.setEnabled(shouldShowPlane);
@@ -163,7 +163,7 @@ export class BillboardOverlay {
       this.updateBillboardPosition();
     }
     if (this.isAnimatingCamera) {
-      this.updateCameraLerp(deltaTime);
+      this.updateCameraLerp();
     }
   }
 
@@ -180,7 +180,7 @@ export class BillboardOverlay {
       const parsed = new URL(url);
       const path = parsed.pathname.split('/').filter(Boolean).pop();
       return path ?? url;
-    } catch (err) {
+    } catch {
       const parts = url.split('/');
       return parts.pop() || url;
     }
@@ -257,7 +257,7 @@ export class BillboardOverlay {
     this.isAnimatingCamera = true;
   }
 
-  private updateCameraLerp(_deltaTime: number): void {
+  private updateCameraLerp(): void {
     const speed = this.config.camera.lerpSpeedFactor * this.config.camera.animationSpeedFactor;
     const stopThresholdPos = 0.01;
     const stopThresholdAngle = 0.001;

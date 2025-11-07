@@ -369,7 +369,7 @@ export class CubeWallPresenter {
       this.sceneTime += deltaTime * this.config.waveSpeed;
       this.cubeField.update(deltaTime, this.sceneTime);
       this.updateAutoSelection(deltaTime);
-      this.billboardOverlay.update(deltaTime);
+      this.billboardOverlay.update();
       this.emitHtmlBillboardState();
       this.emitAxisLabelsState();
       this.updateAxis3DLabels();
@@ -598,16 +598,13 @@ export class CubeWallPresenter {
       }
       labelText = labelText.split('{{date}}').join(dateText);
 
-      if (!labelText.trim()) {
-        // eslint-disable-next-line no-continue
-        continue;
+      if (labelText.trim()) {
+        labels.push({
+          id: `axis-${index}`,
+          text: labelText,
+          worldPosition,
+        });
       }
-
-      labels.push({
-        id: `axis-${index}`,
-        text: labelText,
-        worldPosition,
-      });
     }
 
     return labels;
@@ -687,7 +684,7 @@ export class CubeWallPresenter {
       const parsed = new URL(url);
       const path = parsed.pathname.split('/').filter(Boolean).pop();
       return path ?? url;
-    } catch (error) {
+    } catch {
       const parts = url.split('/');
       return parts.pop() || url;
     }
