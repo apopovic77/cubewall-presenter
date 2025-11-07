@@ -25,6 +25,7 @@ export interface BillboardDisplayState {
   isVisible: boolean;
   cubeScreenX: number;
   cubeScreenY: number;
+  frameId: number;
   content: {
     gridX: number;
     gridZ: number;
@@ -64,6 +65,7 @@ export class CubeWallPresenter {
   private readonly axis3DLabelManager: Axis3DLabelManager;
   private currentBillboardInfo: CubeSelectionInfo | null = null;
   private currentBillboardCell: CubeCell | null = null;
+  private billboardFrameId = 0;
   private sceneTime = 0;
   private disposed = false;
   private hoverInteractionEnabled = true;
@@ -553,6 +555,7 @@ export class CubeWallPresenter {
       isVisible,
       cubeScreenX,
       cubeScreenY,
+      frameId: this.billboardFrameId++,
       content: {
         gridX: this.currentBillboardInfo.gridX,
         gridZ: this.currentBillboardInfo.gridZ,

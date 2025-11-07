@@ -479,15 +479,17 @@ body {
 
 .cw-axis-label {
   position: absolute;
-  transform: translate(-110%, -50%);
-  background: rgba(10, 16, 32, 0.72);
-  border: 1px solid rgba(120, 160, 255, 0.28);
+  transform: translate(-125%, -50%) scale(-1, -1);
+  transform-origin: center;
+  background: rgba(248, 249, 252, 0.88);
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
+  padding: 4px 12px;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(230, 238, 255, 0.82);
-  box-shadow: 0 18px 40px rgba(5, 8, 20, 0.45);
-  backdrop-filter: blur(12px) saturate(140%);
+  color: rgba(18, 22, 30, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(6px) saturate(120%);
+  font-weight: 600;
 }

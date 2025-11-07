@@ -42,7 +42,11 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
   const lineStartY = clamp(state.cubeScreenY + 30, 0, state.viewportHeight);
   const lineEndX = clampedX;
   const lineEndY = clampedY + 24;
-  const connectorValid = Number.isFinite(lineStartX) && Number.isFinite(lineStartY) && Number.isFinite(lineEndX) && Number.isFinite(lineEndY);
+  const connectorValid =
+    Number.isFinite(lineStartX) &&
+    Number.isFinite(lineStartY) &&
+    Number.isFinite(lineEndX) &&
+    Number.isFinite(lineEndY);
 
   return (
     <>

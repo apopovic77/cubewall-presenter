@@ -41,6 +41,7 @@ export class Axis3DLabelManager {
       entry.plane.position.copyFrom(label.worldPosition);
       entry.plane.lookAt(cameraPosition);
       entry.plane.rotation.y += Math.PI;
+      entry.plane.rotation.x += Math.PI;
     });
 
     Array.from(this.entries.entries()).forEach(([id, entry]) => {
@@ -100,11 +101,11 @@ export class Axis3DLabelManager {
     const ctx = texture.getContext() as CanvasRenderingContext2D;
     const { width, height } = texture.getSize();
     ctx.clearRect(0, 0, width, height);
-    ctx.font = 'bold 160px "Inter", "Helvetica", sans-serif';
+    ctx.font = '600 110px "Inter", "Helvetica", sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#f5f8ff';
-    const padding = 60;
+    ctx.fillStyle = '#111111';
+    const padding = 30;
     ctx.fillText(text, padding, height / 2);
     texture.update(false);
 
