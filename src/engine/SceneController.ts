@@ -19,6 +19,14 @@ import '@babylonjs/core/Shaders/depthOfField.fragment';
 import '@babylonjs/core/Shaders/depthOfFieldMerge.fragment';
 import '@babylonjs/core/Shaders/circleOfConfusion.fragment';
 import '@babylonjs/core/Shaders/imageProcessing.fragment';
+import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { PhysicsAggregate } from '@babylonjs/core/Physics/v2/physicsAggregate';
+import { PhysicsShapeType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
+import { PhysicsEngine } from '@babylonjs/core/Physics/v2/physicsEngine';
+import { HavokPlugin } from '@babylonjs/core/Physics/v2/Plugins/havokPlugin.js';
+import HavokPhysics from '@babylonjs/havok';
+import type { Observer } from '@babylonjs/core/Misc/observable';
 import { appConfig, DOF_FOCUS_MIN, DOF_WORLD_TO_MM } from '../config/AppConfig';
 import type { CubeWallConfig } from '../config/AppConfig';
 
@@ -39,6 +47,13 @@ export class SceneController {
   private fillLight: DirectionalLight | null = null;
   private gradientLayer: Layer | null = null;
   private renderingPipeline: DefaultRenderingPipeline | null = null;
+  private physicsGround: Mesh | null = null;
+  private physicsPlugin: HavokPlugin | null = null;
+  private physicsReady = false;
+  private havokInitPromise: Promise<HavokPlugin> | null = null;
+  private physicsEngine: PhysicsEngine | null = null;
+  private groundAggregate: PhysicsAggregate | null = null;
+  private physicsStepObserver: Observer<Scene> | null = null;
 
   constructor({ canvas, config }: SceneControllerOptions) {
     this.config = config ?? appConfig;
@@ -204,9 +219,7 @@ export class SceneController {
     if (this.config.depthOfFieldEnabled) {
       this.scene.enableDepthRenderer(this.camera, false);
     } else {
-      if (typeof (this.scene as Scene & { disableDepthRenderer?: (camera?: ArcRotateCamera) => void }).disableDepthRenderer === 'function') {
-        (this.scene as Scene & { disableDepthRenderer?: (camera?: ArcRotateCamera) => void }).disableDepthRenderer?.(this.camera);
-      }
+      this.scene.disableDepthRenderer(this.camera);
     }
     const blurLevelMap: Record<string, DepthOfFieldEffectBlurLevel> = {
       low: DepthOfFieldEffectBlurLevel.Low,
@@ -238,8 +251,80 @@ export class SceneController {
       this.gradientLayer.dispose();
       this.gradientLayer = null;
     }
+    this.groundAggregate?.dispose();
+    this.groundAggregate = null;
     this.renderingPipeline?.dispose();
     this.scene.dispose();
     this.engine.dispose();
+  }
+
+  public async enablePhysicsAsync(): Promise<void> {
+    if (this.physicsReady) return;
+    if (!this.havokInitPromise) {
+      this.havokInitPromise = HavokPhysics({
+        locateFile: (path: string) => (path.endsWith('.wasm') ? '/havok/HavokPhysics.wasm' : path),
+      }).then((havokInstance) => new HavokPlugin(true, havokInstance));
+    }
+    this.physicsPlugin = await this.havokInitPromise;
+    if (!this.physicsReady) {
+      this.physicsReady = true;
+    }
+    if (!this.physicsGround) {
+      if (!this.physicsEngine) {
+        this.physicsEngine = new PhysicsEngine(new Vector3(0, -9.81, 0), this.physicsPlugin!);
+        this.physicsEngine.setSubTimeStep(1 / 120);
+        if (!this.physicsStepObserver) {
+          this.physicsStepObserver = this.scene.onBeforeRenderObservable.add(() => {
+            if (!this.physicsReady || !this.physicsEngine) return;
+            this.physicsEngine._step(this.scene.getEngine().getDeltaTime() / 1000);
+          });
+        }
+        (this.scene as unknown as { getPhysicsEngine?: () => PhysicsEngine | null }).getPhysicsEngine = () => this.physicsEngine;
+        (this.scene as unknown as { _physicsEngine?: PhysicsEngine | null })._physicsEngine = this.physicsEngine;
+      }
+      this.physicsGround = MeshBuilder.CreateGround('physicsGround', { width: 400, height: 400 }, this.scene);
+      this.physicsGround.position.y = this.config.physicsGroundHeight;
+      this.physicsGround.isPickable = false;
+      this.physicsGround.receiveShadows = true;
+      this.physicsGround.material = null;
+      this.groundAggregate = new PhysicsAggregate(
+        this.physicsGround,
+        PhysicsShapeType.BOX,
+        { mass: 0, restitution: 0.2, friction: 0.6 },
+        this.scene,
+      );
+    }
+    this.physicsReady = true;
+  }
+
+  public isPhysicsReady(): boolean {
+    return this.physicsReady;
+  }
+
+  public getPhysicsScene(): Scene {
+    return this.scene;
+  }
+
+  public getPhysicsGroundHeight(): number {
+    return this.config.physicsGroundHeight;
+  }
+
+  public disablePhysics(): void {
+    if (this.physicsStepObserver) {
+      this.scene.onBeforeRenderObservable.remove(this.physicsStepObserver);
+      this.physicsStepObserver = null;
+    }
+
+    this.groundAggregate?.dispose();
+    this.groundAggregate = null;
+    this.physicsGround?.dispose();
+    this.physicsGround = null;
+
+    const physicsEngine = this.scene.getPhysicsEngine();
+    physicsEngine?.dispose();
+    this.physicsEngine = null;
+    this.physicsReady = false;
+    this.physicsPlugin = null;
+    this.havokInitPromise = null;
   }
 }

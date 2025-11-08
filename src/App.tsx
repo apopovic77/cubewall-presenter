@@ -9,7 +9,7 @@ import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
-import { appConfig } from './config/AppConfig';
+import { appConfig, type TextureUvLayout } from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
@@ -52,6 +52,16 @@ function loadCookieSettings(): PresenterSettings {
   }
 }
 
+function mapUvLayout(layout: TextureUvLayout): { sidePattern: 'uniform' | 'alternating'; mirrorTopBottom: boolean } {
+  switch (layout) {
+    case 'mirrorTopAndAlternatingSides':
+      return { sidePattern: 'alternating' as const, mirrorTopBottom: true };
+    case 'standard':
+    default:
+      return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
+  }
+}
+
 interface InitialSettingsResult {
   settings: PresenterSettings;
   fromServer: boolean;
@@ -72,6 +82,10 @@ async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
 function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.gridSize = settings.gridSize;
   appConfig.useFallbackImages = settings.useFallbackImages;
+  appConfig.textureUvLayout = settings.textureUvLayout;
+  const { sidePattern, mirrorTopBottom } = mapUvLayout(settings.textureUvLayout);
+  appConfig.textureSidePattern = sidePattern;
+  appConfig.textureMirrorTopBottom = mirrorTopBottom;
   appConfig.waveSpeed = settings.waveSpeed;
   appConfig.waveAmplitudeY = settings.waveAmplitudeY;
   appConfig.waveAmplitudeRot = settings.waveAmplitudeRot;
@@ -80,6 +94,7 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.selectedCubeRotation = settings.selectedCubeRotation;
   appConfig.selectedCubePopOutDistance = settings.selectedCubePopOutDistance;
   appConfig.selectedCubeLift = settings.selectedCubeLift;
+  appConfig.selectedCubeNormalDirection = settings.selectedCubeNormalDirection;
   appConfig.camera.radius = settings.cameraRadius;
   appConfig.camera.flyToRadiusFactor = settings.flyToRadiusFactor;
   appConfig.camera.lerpSpeedFactor = settings.cameraLerpSpeed;
@@ -146,12 +161,14 @@ export default function App() {
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
   const [axisLabels, setAxisLabels] = useState<AxisLabelDisplayState[]>([]);
-  const [contentItems, setContentItems] = useState<CubeContentItem[]>([]);
   const hasPersistedRef = useRef(false);
   const initialSourceRef = useRef<'server' | 'cookie'>('cookie');
   const presenterRef = useRef<CubeWallPresenter | null>(null);
   const contentItemsRef = useRef<CubeContentItem[]>([]);
   const contentProviderId = resolveContentProviderId();
+  const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
+  const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
+  appConfig.useFallbackImages = enableBaseFallbackTextures;
 
   useEffect(() => {
     let disposed = false;
@@ -172,13 +189,20 @@ export default function App() {
       const items = await loadCubeContent(contentProviderId);
       if (cancelled) return;
       contentItemsRef.current = items;
-      setContentItems(items);
-      presenterRef.current?.setContent(items);
+      const currentSettings = settings ?? defaultPresenterSettings;
+      const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
+      presenterRef.current?.setContent(items, {
+        repeatContent: contentProviderId === 'default',
+        useFallbackTextures: enableBaseFallbackTextures && contentProviderId === 'default',
+        useDynamicFallbacks: enableBaseFallbackTextures && contentProviderId === 'default' && enablePicsumFallbacks,
+        sidePattern,
+        mirrorTopBottom,
+      });
     })();
     return () => {
       cancelled = true;
     };
-  }, [contentProviderId]);
+  }, [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks, settings]);
 
   const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
     setSelection(nextSelection);
@@ -187,9 +211,18 @@ export default function App() {
   const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
     presenterRef.current = presenter;
     if (presenter && contentItemsRef.current.length > 0) {
-      presenter.setContent(contentItemsRef.current);
+      const provider = resolveContentProviderId();
+      const currentSettings = settings ?? defaultPresenterSettings;
+      const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
+      presenter.setContent(contentItemsRef.current, {
+        repeatContent: provider === 'default',
+        useFallbackTextures: enableBaseFallbackTextures && provider === 'default',
+        useDynamicFallbacks: enableBaseFallbackTextures && provider === 'default' && enablePicsumFallbacks,
+        sidePattern,
+        mirrorTopBottom,
+      });
     }
-  }, []);
+  }, [enableBaseFallbackTextures, enablePicsumFallbacks, settings]);
 
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
     setSettings((prev) => (prev ? { ...prev, ...update } : prev));
@@ -232,6 +265,10 @@ export default function App() {
       }
       if (event.key === 'Escape') {
         setIsSettingsOpen(false);
+      }
+      if (event.key === 'F3') {
+        event.preventDefault();
+        void presenterRef.current?.triggerPhysicsDrop();
       }
     };
     window.addEventListener('keydown', handleKeyDown);

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { BillboardDisplayState } from '../engine/CubeWallPresenter';
 import type { PresenterSettings } from '../config/PresenterSettings';
+import { appConfig } from '../config/AppConfig';
 
 export interface HtmlBillboardProps {
   state: BillboardDisplayState;
@@ -35,7 +36,10 @@ function escapeHtml(value: string): string {
 
 function buildHtml(template: string, state: BillboardDisplayState): string {
   if (!state.content) return template || '';
-  let html = template || '';
+  const hasTokens =
+    template && /\{\{\s*title\s*\}\}/.test(template) && /\{\{\s*summary\s*\}\}/.test(template);
+  const fallbackTemplate = appConfig.billboard.htmlContent ?? '';
+  let html = (hasTokens ? template : fallbackTemplate) || '';
   const replacements: Record<string, string | number> = {
     '{{gridX}}': state.content.gridX,
     '{{gridZ}}': state.content.gridZ,

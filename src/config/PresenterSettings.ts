@@ -1,9 +1,11 @@
 import { appConfig } from './AppConfig';
-import type { AxisLabelsMode, BackgroundType, BillboardMode, DepthOfFieldBlurLevel } from './AppConfig';
+import type { AxisLabelsMode, BackgroundType, BillboardMode, DepthOfFieldBlurLevel, TextureUvLayout } from './AppConfig';
 
 export interface PresenterSettings {
   gridSize: number;
   useFallbackImages: boolean;
+  useDynamicFallbacks: boolean;
+  textureUvLayout: TextureUvLayout;
   waveSpeed: number;
   waveAmplitudeY: number;
   waveAmplitudeRot: number;
@@ -15,6 +17,7 @@ export interface PresenterSettings {
   selectedCubeRotation: number;
   selectedCubePopOutDistance: number;
   selectedCubeLift: number;
+  selectedCubeNormalDirection: 1 | -1;
   showSelectionOverlay: boolean;
   showDebugOverlay: boolean;
   slowAutorotateEnabled: boolean;
@@ -74,6 +77,8 @@ export interface PresenterSettings {
 export const defaultPresenterSettings: PresenterSettings = {
   gridSize: appConfig.gridSize,
   useFallbackImages: appConfig.useFallbackImages,
+  useDynamicFallbacks: appConfig.useFallbackImages,
+  textureUvLayout: appConfig.textureUvLayout,
   waveSpeed: appConfig.waveSpeed,
   waveAmplitudeY: appConfig.waveAmplitudeY,
   waveAmplitudeRot: appConfig.waveAmplitudeRot,
@@ -85,6 +90,7 @@ export const defaultPresenterSettings: PresenterSettings = {
   selectedCubeRotation: appConfig.selectedCubeRotation,
   selectedCubePopOutDistance: appConfig.selectedCubePopOutDistance,
   selectedCubeLift: appConfig.selectedCubeLift,
+  selectedCubeNormalDirection: appConfig.selectedCubeNormalDirection,
   showSelectionOverlay: false,
   showDebugOverlay: false,
   slowAutorotateEnabled: false,

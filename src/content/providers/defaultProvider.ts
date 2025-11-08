@@ -1,6 +1,6 @@
-import type { CubeContentItem } from '../../types/content';
+import type { CubeContentLoadResult } from '../index';
 
-export async function loadDefaultContent(): Promise<CubeContentItem[]> {
-  return [];
+export async function loadDefaultContent(): Promise<CubeContentLoadResult> {
+  return { items: [], layout: undefined };
 }
 

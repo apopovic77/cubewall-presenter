@@ -6,12 +6,14 @@ import { SceneController } from './SceneController';
 import { CubeField } from './CubeField';
 import type { CubeSelectionInfo } from './CubeField';
 import type { CubeCell } from './CubeField';
+import type { CubeContentOptions } from './CubeField';
 import { appConfig, DOF_WORLD_TO_MM } from '../config/AppConfig';
-import type { CubeWallConfig } from '../config/AppConfig';
+import type { CubeWallConfig, AxisLabelAxis } from '../config/AppConfig';
 import type { PresenterSettings } from '../config/PresenterSettings';
 import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
 import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
+import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 
@@ -40,6 +42,7 @@ export interface BillboardDisplayState {
 export interface AxisLabelDisplayState {
   id: string;
   label: string;
+  axis: AxisLabelAxis;
   screenX: number;
   screenY: number;
 }
@@ -74,14 +77,49 @@ export class CubeWallPresenter {
   private autoSelectEnabled = false;
   private autoSelectInterval = 6;
   private autoSelectElapsed = 0;
-  private axisLabelAnchors: Vector3[] = [];
   private axisLabelStartDateMs = Number.NaN;
   private readonly axisLabelDateFormatter = new Intl.DateTimeFormat('de-DE', {
     day: 'numeric',
     month: 'numeric',
     year: 'numeric',
   });
-  private contentItems: CubeContentItem[] = [];
+  private physicsActive = false;
+  private physicsDragCandidate: { cell: CubeCell; startX: number; startY: number } | null = null;
+  private activePhysicsDrag: { cell: CubeCell } | null = null;
+  private skipNextPhysicsClick = false;
+  private savedHoverInteraction = true;
+  private savedAutoSelect = false;
+
+  public async triggerPhysicsDrop(): Promise<void> {
+    if (this.physicsActive) {
+      this.physicsActive = false;
+      this.cubeField.disablePhysicsDrop();
+      this.sceneController.disablePhysics();
+      this.hoverInteractionEnabled = this.savedHoverInteraction;
+      this.autoSelectEnabled = this.savedAutoSelect;
+      this.autoSelectElapsed = 0;
+      this.physicsDragCandidate = null;
+      this.activePhysicsDrag = null;
+      this.skipNextPhysicsClick = false;
+      this.refreshAxisAnchors();
+      return;
+    }
+
+    this.savedHoverInteraction = this.hoverInteractionEnabled;
+    this.savedAutoSelect = this.autoSelectEnabled;
+    this.cubeField.selectCell(null);
+    this.updateBillboard(null, false);
+    this.selectionChange?.(null);
+    this.billboardStateChange?.(null);
+    this.physicsActive = true;
+    this.autoSelectEnabled = false;
+    this.hoverInteractionEnabled = false;
+    this.physicsDragCandidate = null;
+    this.activePhysicsDrag = null;
+    this.skipNextPhysicsClick = false;
+    await this.sceneController.enablePhysicsAsync();
+    this.cubeField.enablePhysicsDrop();
+  }
 
   private updateDepthOfFieldFocus(cell: CubeCell | null): void {
     if (!this.config.depthOfFieldEnabled || !this.config.depthOfFieldAutoFocusEnabled) return;
@@ -156,6 +194,10 @@ export class CubeWallPresenter {
       if (this.disposed) return;
       switch (pointerInfo.type) {
         case PointerEventTypes.POINTERMOVE: {
+          if (this.physicsActive) {
+            this.handlePhysicsPointerMove(pointerInfo);
+            break;
+          }
           if (!this.hoverInteractionEnabled) {
             lastHoveredId = null;
             break;
@@ -184,21 +226,52 @@ export class CubeWallPresenter {
           if ('button' in event && event.button !== 0) break;
           const pickInfo = this.resolvePickInfo(pointerInfo);
           if (pickInfo?.pickedMesh && pickInfo.pickedMesh.isPickable) {
-            this.logDebug(`POINTERDOWN on ${pickInfo.pickedMesh.name}`);
+            const cell = this.cubeField.getCellFromMesh(pickInfo.pickedMesh);
+            if (!cell) {
+              this.logDebug(`POINTERDOWN -> no cube data for mesh ${pickInfo.pickedMesh.name}`);
+              break;
+            }
             if (typeof event.preventDefault === 'function') event.preventDefault();
             if (typeof event.stopPropagation === 'function') event.stopPropagation();
-            this.handlePick(pointerInfo, pickInfo);
+            if (this.physicsActive) {
+              const startX = 'clientX' in event ? event.clientX : 0;
+              const startY = 'clientY' in event ? event.clientY : 0;
+              this.physicsDragCandidate = { cell, startX, startY };
+              this.activePhysicsDrag = null;
+              this.skipNextPhysicsClick = false;
+              this.logDebug(`POINTERDOWN physics candidate -> ${pickInfo.pickedMesh.name}`);
+            } else {
+              this.logDebug(`POINTERDOWN on ${pickInfo.pickedMesh.name}`);
+              this.physicsDragCandidate = null;
+              this.activePhysicsDrag = null;
+              this.skipNextPhysicsClick = false;
+              this.handlePick(pointerInfo, pickInfo);
+            }
             pointerDownPos = null;
           } else {
             this.logDebug('POINTERDOWN (no pickable mesh) - waiting for POINTERUP/tap');
             this.billboardOverlay.interruptCameraAnimation();
             pointerDownPos = 'clientX' in event && 'clientY' in event ? { x: event.clientX, y: event.clientY } : null;
+            this.physicsDragCandidate = null;
+            this.skipNextPhysicsClick = false;
           }
           break;
         }
         case PointerEventTypes.POINTERUP: {
           const event = pointerInfo.event as PointerEvent | MouseEvent;
           if ('button' in event && event.button !== 0) break;
+          if (this.physicsActive) {
+            if (this.activePhysicsDrag) {
+              this.finishActivePhysicsDrag();
+              this.skipNextPhysicsClick = true;
+            } else if (this.physicsDragCandidate && !this.skipNextPhysicsClick) {
+              this.skipNextPhysicsClick = true;
+              this.applySelection(this.physicsDragCandidate.cell);
+            }
+            this.physicsDragCandidate = null;
+            pointerDownPos = null;
+            break;
+          }
           if (pointerDownPos && 'clientX' in event && 'clientY' in event) {
             const dx = event.clientX - pointerDownPos.x;
             const dy = event.clientY - pointerDownPos.y;
@@ -225,13 +298,125 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERTAP: {
           this.logDebug('POINTERTAP');
+          if (this.physicsActive) {
+            if (this.skipNextPhysicsClick) {
+              this.skipNextPhysicsClick = false;
+              break;
+            }
+          }
           this.handlePick(pointerInfo);
+          if (this.physicsActive) {
+            this.skipNextPhysicsClick = false;
+          }
           break;
         }
         default:
           break;
       }
     });
+  }
+
+  private handlePhysicsPointerMove(pointerInfo: PointerInfo): void {
+    if (!this.physicsActive) return;
+    const event = pointerInfo.event as PointerEvent | MouseEvent | null;
+    if (!event) return;
+    const buttons = 'buttons' in event ? event.buttons ?? 0 : 0;
+
+    if (this.activePhysicsDrag) {
+      if (buttons === 0) {
+        this.finishActivePhysicsDrag();
+      } else {
+        this.updateActivePhysicsDrag(pointerInfo);
+      }
+      this.skipNextPhysicsClick = true;
+      return;
+    }
+
+    if (!this.physicsDragCandidate) {
+      return;
+    }
+
+    if (buttons === 0) {
+      return;
+    }
+
+    if (!('clientX' in event) || !('clientY' in event)) {
+      return;
+    }
+
+    const dx = event.clientX - this.physicsDragCandidate.startX;
+    const dy = event.clientY - this.physicsDragCandidate.startY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance <= 6) {
+      return;
+    }
+
+    const cell = this.physicsDragCandidate.cell;
+    this.startPhysicsDrag(cell);
+    this.activePhysicsDrag = { cell };
+    this.physicsDragCandidate = null;
+    this.skipNextPhysicsClick = true;
+    this.updateActivePhysicsDrag(pointerInfo);
+  }
+
+  private startPhysicsDrag(cell: CubeCell): void {
+    this.logDebug(`physics drag start -> cube_${cell.gridX}_${cell.gridZ}`);
+    this.cubeField.selectCell(null);
+    this.updateBillboard(null, false);
+    this.cubeField.beginPhysicsDrag(cell);
+  }
+
+  private updateActivePhysicsDrag(pointerInfo: PointerInfo): void {
+    if (!this.activePhysicsDrag) return;
+    const dragCell = this.activePhysicsDrag.cell;
+    const point = this.getGroundIntersection(pointerInfo);
+    if (!point) return;
+    const groundHeight = this.sceneController.getPhysicsGroundHeight();
+    point.y = groundHeight + this.config.cubeSize * 0.5;
+    this.cubeField.updatePhysicsDrag(dragCell, point);
+  }
+
+  private finishActivePhysicsDrag(): void {
+    if (!this.activePhysicsDrag) return;
+    this.cubeField.endPhysicsDrag(this.activePhysicsDrag.cell);
+    this.logDebug(`physics drag end -> cube_${this.activePhysicsDrag.cell.gridX}_${this.activePhysicsDrag.cell.gridZ}`);
+    this.activePhysicsDrag = null;
+  }
+
+  private getGroundIntersection(pointerInfo: PointerInfo): Vector3 | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const event = pointerInfo.event as PointerEvent | MouseEvent | null;
+    if (!event) return null;
+
+    let x = 0;
+    let y = 0;
+    if ('offsetX' in event && typeof event.offsetX === 'number' && typeof event.offsetY === 'number') {
+      x = event.offsetX;
+      y = event.offsetY;
+    } else if ('clientX' in event && 'clientY' in event) {
+      const rect = canvas.getBoundingClientRect();
+      x = event.clientX - rect.left;
+      y = event.clientY - rect.top;
+    } else {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const scaledX = x * scaleX;
+    const scaledY = y * scaleY;
+
+    const camera = this.sceneController.getCamera();
+    const ray = this.scene.createPickingRay(scaledX, scaledY, Matrix.Identity(), camera);
+    const groundHeight = this.sceneController.getPhysicsGroundHeight();
+    const plane = Plane.FromPositionAndNormal(new Vector3(0, groundHeight, 0), Vector3.Up());
+    const distance = ray.intersectsPlane(plane);
+    if (distance === null) {
+      return null;
+    }
+    return ray.origin.add(ray.direction.scale(distance));
   }
 
   private handlePick(pointerInfo: PointerInfo, pickInfoOverride?: PickingInfo | null): void {
@@ -258,11 +443,14 @@ export class CubeWallPresenter {
       this.updateBillboard(null);
       return;
     }
+    this.applySelection(cell, mesh.name);
+  }
 
+  private applySelection(cell: CubeCell, meshName?: string): void {
     const alreadySelected = cell.isSelected;
-    this.logDebug(`handlePick: ${mesh.name} -> ${alreadySelected ? 'deselect' : 'select'}`);
+    this.logDebug(`handlePick: ${meshName ?? cell.mesh.name} -> ${alreadySelected ? 'deselect' : 'select'}`);
     this.cubeField.selectCell(alreadySelected ? null : cell);
-    if (!alreadySelected && this.hoverInteractionEnabled) {
+    if (!alreadySelected && this.hoverInteractionEnabled && !this.physicsActive) {
       this.cubeField.triggerRipple(cell);
     }
     this.updateBillboard(alreadySelected ? null : cell);
@@ -367,9 +555,8 @@ export class CubeWallPresenter {
     this.debug(line);
   }
 
-  public setContent(items: CubeContentItem[]): void {
-    this.contentItems = items;
-    this.cubeField.setContent(items);
+  public setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): void {
+    this.cubeField.setContent(items, options);
     if (this.currentBillboardCell) {
       this.updateBillboard(this.currentBillboardCell, false);
     } else {
@@ -417,6 +604,7 @@ export class CubeWallPresenter {
     this.config.selectedCubeRotation = settings.selectedCubeRotation;
     this.config.selectedCubePopOutDistance = settings.selectedCubePopOutDistance;
     this.config.selectedCubeLift = settings.selectedCubeLift;
+    this.config.selectedCubeNormalDirection = settings.selectedCubeNormalDirection;
     this.config.slowAutorotateEnabled = settings.slowAutorotateEnabled;
     this.config.slowAutorotateSpeed = settings.slowAutorotateSpeed;
     this.config.selectionCameraFollowEnabled = settings.selectionCameraFollowEnabled;
@@ -451,6 +639,13 @@ export class CubeWallPresenter {
     this.config.billboard.heightOffset = settings.billboardHeightOffset;
     this.config.billboard.distance = settings.billboardDistance;
     this.config.billboard.angleDegrees = settings.billboardAngleDegrees;
+    this.config.textureUvLayout = settings.textureUvLayout;
+    const uvLayout = settings.textureUvLayout === 'mirrorTopAndAlternatingSides'
+      ? { sidePattern: 'alternating' as const, mirrorTopBottom: true }
+      : { sidePattern: 'uniform' as const, mirrorTopBottom: false };
+    const { sidePattern, mirrorTopBottom } = uvLayout;
+    this.config.textureSidePattern = sidePattern;
+    this.config.textureMirrorTopBottom = mirrorTopBottom;
     this.config.billboard.mode = settings.billboardMode;
     this.config.billboard.htmlContent = settings.billboardHtmlContent;
     this.config.axisLabels.enabled = settings.axisLabelsEnabled;
@@ -461,11 +656,11 @@ export class CubeWallPresenter {
     this.config.axisLabels.offset.y = settings.axisLabelsOffsetY;
     this.config.axisLabels.offset.z = settings.axisLabelsOffsetZ;
     this.updateAxisLabelStartDate();
-    if (this.config.axisLabels.enabled && this.axisLabelAnchors.length === 0) {
+    if (this.config.axisLabels.enabled) {
       this.refreshAxisAnchors();
-    }
-    if (!this.config.axisLabels.enabled) {
+    } else {
       this.axisLabelStateChange?.([]);
+      this.axis3DLabelManager.update([], this.sceneController.getCamera().position);
     }
 
     this.sceneController.updateLightingFromConfig();
@@ -474,6 +669,10 @@ export class CubeWallPresenter {
     if (this.config.depthOfFieldAutoFocusEnabled) {
       this.updateDepthOfFieldFocus(null);
     }
+    this.cubeField.updateTextureMirrorOptions({
+      sidePattern,
+      mirrorTopBottom,
+    });
     this.emitHtmlBillboardState();
     this.emitAxisLabelsState();
   }
@@ -489,7 +688,7 @@ export class CubeWallPresenter {
   }
 
   private updateAutoSelection(deltaTime: number): void {
-    if (!this.autoSelectEnabled) return;
+    if (!this.autoSelectEnabled || this.physicsActive) return;
     this.autoSelectElapsed += deltaTime;
     if (this.autoSelectElapsed < this.autoSelectInterval) return;
     this.autoSelectElapsed = 0;
@@ -585,8 +784,21 @@ export class CubeWallPresenter {
     this.billboardStateChange(state);
   }
 
+  private getAxisLabelAxes(): AxisLabelAxis[] {
+    const axes = this.config.axisLabels.axes;
+    if (Array.isArray(axes) && axes.length > 0) {
+      const normalized = axes
+        .map((axis) => (axis === 'columns' ? 'columns' : 'rows'))
+        .filter((axis, index, arr) => arr.indexOf(axis) === index) as AxisLabelAxis[];
+      if (normalized.length > 0) {
+        return normalized;
+      }
+    }
+    return ['rows'];
+  }
+
   private computeAxisLabelData(): AxisLabelData[] {
-    if (!this.config.axisLabels.enabled || this.axisLabelAnchors.length === 0) {
+    if (!this.config.axisLabels.enabled) {
       return [];
     }
 
@@ -602,37 +814,53 @@ export class CubeWallPresenter {
 
     const labels: AxisLabelData[] = [];
 
-    for (let index = 0; index < this.axisLabelAnchors.length; index += 1) {
-      const anchor = this.axisLabelAnchors[index];
-      const worldPosition = anchor.add(offsetVector);
+    const axes = this.getAxisLabelAxes();
 
-      let labelText = template;
-      labelText = labelText.split('{{row}}').join(index.toString());
-      labelText = labelText.split('{{row1}}').join((index + 1).toString());
+    axes.forEach((axis) => {
+      const anchors = this.cubeField.getAxisAnchors(axis);
+      anchors.forEach((anchor, index) => {
+        const worldPosition = anchor.add(offsetVector);
 
-      let dateText = '';
-      if (hasValidDate) {
-        const date = new Date(startDateMs + index * this.config.axisLabels.stepDays * DAY_MS);
-        if (!Number.isNaN(date.getTime())) {
-          dateText = this.axisLabelDateFormatter.format(date);
+        let labelText = template;
+        labelText = labelText.split('{{axis}}').join(axis);
+
+        if (axis === 'rows') {
+          labelText = labelText.split('{{row}}').join(index.toString());
+          labelText = labelText.split('{{row1}}').join((index + 1).toString());
+          labelText = labelText.split('{{col}}').join('');
+          labelText = labelText.split('{{col1}}').join('');
+
+          let dateText = '';
+          if (hasValidDate) {
+            const date = new Date(startDateMs + index * this.config.axisLabels.stepDays * DAY_MS);
+            if (!Number.isNaN(date.getTime())) {
+              dateText = this.axisLabelDateFormatter.format(date);
+            }
+          }
+          labelText = labelText.split('{{date}}').join(dateText);
+        } else {
+          labelText = labelText.split('{{col}}').join(index.toString());
+          labelText = labelText.split('{{col1}}').join((index + 1).toString());
+          labelText = labelText.split('{{row}}').join('');
+          labelText = labelText.split('{{row1}}').join('');
+          labelText = labelText.split('{{date}}').join('');
         }
-      }
-      labelText = labelText.split('{{date}}').join(dateText);
 
-      if (labelText.trim()) {
-        labels.push({
-          id: `axis-${index}`,
-          text: labelText,
-          worldPosition,
-        });
-      }
-    }
+        if (labelText.trim()) {
+          labels.push({
+            id: `axis-${axis}-${index}`,
+            axis,
+            text: labelText,
+            worldPosition,
+          });
+        }
+      });
+    });
 
     return labels;
   }
 
   private refreshAxisAnchors(): void {
-    this.axisLabelAnchors = this.cubeField.getRowAnchors();
     this.updateAxis3DLabels();
   }
 
@@ -681,6 +909,7 @@ export class CubeWallPresenter {
       labels.push({
         id: label.id,
         label: label.text,
+        axis: label.axis,
         screenX: rect.left + normalizedX * rect.width,
         screenY: rect.top + normalizedY * rect.height,
       });

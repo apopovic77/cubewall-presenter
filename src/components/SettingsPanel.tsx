@@ -31,7 +31,6 @@ const SLIDERS: SliderSpec[] = [
   { key: 'depthOfFieldFocusDistance', label: 'DoF Focus Distance', min: 10, max: 500, step: 5, formatter: (v) => `${Math.round(v)}`, isEnabled: (s) => s.depthOfFieldEnabled && !s.depthOfFieldAutoFocusEnabled },
   { key: 'depthOfFieldFStop', label: 'DoF f-stop', min: 0.1, max: 16, step: 0.1, formatter: (v) => v.toFixed(1), isEnabled: (s) => s.depthOfFieldEnabled },
   { key: 'depthOfFieldFocalLength', label: 'DoF Focal Length', min: 1, max: 300, step: 1, formatter: (v) => `${Math.round(v)}mm`, isEnabled: (s) => s.depthOfFieldEnabled },
-  { key: 'depthOfFieldFocusDistance', label: 'DoF Focus Distance', min: 10, max: 500, step: 5, formatter: (v) => `${Math.round(v)}`, isEnabled: (s) => s.depthOfFieldEnabled && !s.depthOfFieldAutoFocusEnabled },
   { key: 'depthOfFieldAutoFocusOffset', label: 'DoF Auto Focus Offset', min: -3, max: 3, step: 0.01, formatter: (v) => `${v.toFixed(2)}`, isEnabled: (s) => s.depthOfFieldEnabled && s.depthOfFieldAutoFocusEnabled },
   { key: 'depthOfFieldAutoFocusSharpness', label: 'DoF Sharpness Scale', min: 0.1, max: 3, step: 0.05, formatter: (v) => `${v.toFixed(2)}x`, isEnabled: (s) => s.depthOfFieldEnabled && s.depthOfFieldAutoFocusEnabled },
   { key: 'interactionRadius', label: 'Ripple Radius', min: 1, max: 8, step: 0.1, formatter: (v) => v.toFixed(1) },
@@ -140,6 +139,18 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                 <span>Show Selection Overlay</span>
               </label>
               <label className="cw-settings__toggle">
+                <span>Pop-Out Direction</span>
+                <select
+                  value={settings.selectedCubeNormalDirection}
+                  onChange={(event) => onChange({
+                    selectedCubeNormalDirection: Number(event.target.value) as PresenterSettings['selectedCubeNormalDirection'],
+                  })}
+                >
+                  <option value={1}>Along plane normal</option>
+                  <option value={-1}>Opposite normal (mirror)</option>
+                </select>
+              </label>
+              <label className="cw-settings__toggle">
                 <input
                   type="checkbox"
                   checked={settings.showDebugOverlay}
@@ -207,6 +218,16 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                   onChange={(event) => onChange({ useFallbackImages: event.target.checked })}
                 />
                 <span>Use Static Fallback Textures</span>
+              </label>
+              <label className="cw-settings__toggle">
+                <span>Texture UV Layout</span>
+                <select
+                  value={settings.textureUvLayout}
+                  onChange={(event) => onChange({ textureUvLayout: event.target.value as PresenterSettings['textureUvLayout'] })}
+                >
+                  <option value="standard">Standard (all faces aligned)</option>
+                  <option value="mirrorTopAndAlternatingSides">Mirror bottom, alternate side faces</option>
+                </select>
               </label>
               <label className="cw-settings__toggle">
                 <input

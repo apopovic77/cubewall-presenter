@@ -11,10 +11,14 @@ function resolveSettingsEndpoint(): string {
   }
 
   if (typeof window !== 'undefined' && window.location) {
-    return `${window.location.origin}/settings`;
+    const { origin, hostname } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'https://cubewall.arkturian.com/settings';
+    }
+    return `${origin}/settings`;
   }
 
-  return '/settings';
+  return 'https://cubewall.arkturian.com/settings';
 }
 
 function isValidSettings(payload: unknown): payload is PresenterSettings {

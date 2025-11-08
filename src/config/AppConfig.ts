@@ -6,15 +6,34 @@ export const DOF_FOCUS_MIN = 5;
 export const DOF_WORLD_TO_MM = 1000;
 export type BillboardMode = '3d' | 'html';
 export type AxisLabelsMode = 'overlay' | '3d';
+export type AxisLabelAxis = 'rows' | 'columns';
+export type TextureSidePattern = 'uniform' | 'alternating';
+export type TextureUvLayout = 'standard' | 'mirrorTopAndAlternatingSides';
+export type CubeLayoutMode = 'matrix' | 'axis';
+export type CubeLayoutAxis = AxisLabelAxis;
+export type CubeLayoutOrder = 'asc' | 'desc';
+
+export interface CubeLayoutConfig {
+  mode: CubeLayoutMode;
+  axis: CubeLayoutAxis;
+  axisKey: string;
+  sortOrder: CubeLayoutOrder;
+  axisOrder: CubeLayoutOrder;
+}
 
 export interface CubeWallConfig {
   maxGridSize: number;
   gridSize: number;
   cubeSize: number;
   cubeSpacing: number;
+  physicsGroundHeight: number;
   selectedCubeLift: number;
+  selectedCubeNormalDirection: 1 | -1;
   selectedCubePopOutDistance: number;
   selectedCubeRotation: number;
+  textureUvLayout: TextureUvLayout;
+  textureSidePattern: TextureSidePattern;
+  textureMirrorTopBottom: boolean;
   waveAmplitudeY: number;
   waveFrequencyY: number;
   waveAmplitudeRot: number;
@@ -84,7 +103,14 @@ export interface CubeWallConfig {
     stepDays: number;
     template: string;
     offset: { x: number; y: number; z: number };
+    axes?: AxisLabelAxis[];
   };
+  gridPlane: {
+    origin: { x: number; y: number; z: number };
+    normal: { x: number; y: number; z: number };
+    forward: { x: number; y: number; z: number };
+  };
+  layout: CubeLayoutConfig;
 }
 
 export const appConfig: CubeWallConfig = {
@@ -92,9 +118,14 @@ export const appConfig: CubeWallConfig = {
   gridSize: 25,
   cubeSize: 1.0,
   cubeSpacing: 0.15,
+  physicsGroundHeight: -0.5,
   selectedCubeLift: 1.6,
   selectedCubePopOutDistance: 0.5,
+  selectedCubeNormalDirection: 1,
   selectedCubeRotation: Math.PI / 4,
+  textureUvLayout: 'standard',
+  textureSidePattern: 'uniform',
+  textureMirrorTopBottom: false,
   waveAmplitudeY: 0.15,
   waveFrequencyY: 0.3,
   waveAmplitudeRot: 0.08,
@@ -172,6 +203,19 @@ export const appConfig: CubeWallConfig = {
     startDateIso: '2025-10-01',
     stepDays: 1,
     template: '{{date}}',
-    offset: { x: -1.4, y: 0.5, z: 0 },
+    offset: { x: -1.0, y: 0.25, z: 0 },
+    axes: ['rows'],
+  },
+  gridPlane: {
+    origin: { x: 0, y: 15, z: 0 },
+    normal: { x: 1, y: 0, z: 0 },
+    forward: { x: 0, y: 0, z: 1 },
+  },
+  layout: {
+    mode: 'matrix',
+    axis: 'rows',
+    axisKey: 'publishedDay',
+    sortOrder: 'desc',
+    axisOrder: 'desc',
   },
 };

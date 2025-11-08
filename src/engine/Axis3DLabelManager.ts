@@ -6,9 +6,11 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import type { AxisLabelAxis } from '../config/AppConfig';
 
 export interface AxisLabelData {
   id: string;
+  axis: AxisLabelAxis;
   text: string;
   worldPosition: Vector3;
 }

@@ -1,14 +1,24 @@
 import { normalizeCubeContent, type CubeContentItem } from '../types/content';
 
+interface StorageObjectRef {
+  id?: number | string | null;
+  mime_type?: string | null;
+  mimeType?: string | null;
+}
+
 interface CandidateMedia {
   url?: string | null;
   thumbnail_url?: string | null;
+  storage_object?: StorageObjectRef | null;
 }
 
 interface CandidateItem {
   id: number | string;
   title?: string | null;
   summary?: string | null;
+  ai_summary_de?: string | null;
+  ai_summary_en?: string | null;
+  raw_text?: string | null;
   url?: string | null;
   published_at?: string | null;
   source_name?: string | null;
@@ -20,7 +30,12 @@ interface CandidatesResponse {
   items?: CandidateItem[];
 }
 
-const globalCrypto: Crypto | undefined = typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
+const globalCrypto: Crypto | undefined =
+  typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
+
+const STORAGE_BASE_URL =
+  (import.meta.env.VITE_KORALMBAHN_STORAGE_URL as string | undefined)?.replace(/\/+$/, '') ??
+  'https://api-storage.arkturian.com';
 
 function resolveApiBaseUrl(): string {
   const explicit = import.meta.env.VITE_KORALMBAHN_API_URL;
@@ -53,12 +68,65 @@ function buildRequestUrl(limit: number, offset: number): string {
   return `${base}/admin/candidates?${params.toString()}`;
 }
 
+function buildStorageMediaUrl(id: string | number, params?: Record<string, string | number | undefined>): string {
+  const url = new URL(`${STORAGE_BASE_URL}/storage/media/${id}`);
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null || value === '') continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
 function pickMediaUrl(media?: CandidateMedia[] | null): string | null {
   if (!media || media.length === 0) return null;
-  const primary = media[0]?.url || media[0]?.thumbnail_url;
-  if (primary) return primary;
-  const fallback = media.find((m) => m.url || m.thumbnail_url);
-  return fallback?.url ?? fallback?.thumbnail_url ?? null;
+
+  for (const item of media) {
+    const storageId = item?.storage_object?.id;
+    const storageMime = (item?.storage_object?.mime_type ?? item?.storage_object?.mimeType ?? '').toLowerCase();
+
+    if (storageId != null) {
+      if (storageMime.startsWith('application/pdf')) {
+        return buildStorageMediaUrl(storageId, { format: 'jpg', width: 1280, quality: 85 });
+      }
+      return buildStorageMediaUrl(storageId, { format: 'webp', width: 1600, quality: 85 });
+    }
+
+    const candidate = item?.url ?? item?.thumbnail_url ?? null;
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]+>/g, ' ');
+}
+
+function normalizeSnippet(value?: string | null): string {
+  if (!value) return '';
+  return stripHtml(value)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractSummary(item: CandidateItem): string {
+  const candidates = [
+    item.ai_summary_de,
+    item.summary,
+    item.ai_summary_en,
+    item.raw_text,
+  ];
+  for (const entry of candidates) {
+    const normalized = normalizeSnippet(entry);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return '';
 }
 
 function createDeterministicId(item: CandidateItem): string {
@@ -78,7 +146,7 @@ function mapCandidateToContent(item: CandidateItem): CubeContentItem {
   return {
     id: createDeterministicId(item),
     title: item.title ?? 'Unbetitelter Beitrag',
-    summary: item.summary ?? '',
+    summary: extractSummary(item),
     url: item.url ?? '#',
     imageUrl: pickMediaUrl(item.media),
     publishedAt: item.published_at ?? null,
@@ -87,25 +155,55 @@ function mapCandidateToContent(item: CandidateItem): CubeContentItem {
   };
 }
 
-export async function fetchCubeContent(limit = 900): Promise<CubeContentItem[]> {
-  const url = buildRequestUrl(limit, 0);
-  try {
-    const response = await fetch(url, { cache: 'no-store' });
-    if (!response.ok) {
-      console.warn(`[CubeContent] request failed (${response.status}) – falling back to defaults.`);
-      return [];
-    }
-    const payload = (await response.json()) as CandidatesResponse;
-    const candidates = Array.isArray(payload.items) ? payload.items : [];
-    if (candidates.length === 0) {
-      return [];
-    }
-    const mapped = candidates.map(mapCandidateToContent);
-    return normalizeCubeContent(mapped);
-  } catch (error) {
-    console.warn('[CubeContent] failed to load content from API – falling back to defaults.', error);
+const PAGE_SIZE = 200;
+
+async function fetchPage(limit: number, offset: number): Promise<CandidateItem[]> {
+  const url = buildRequestUrl(limit, offset);
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    console.warn(`[CubeContent] request failed (${response.status}) at offset=${offset} limit=${limit}`);
     return [];
   }
+  const payload = (await response.json()) as CandidatesResponse;
+  const candidates = Array.isArray(payload.items) ? payload.items : [];
+  return candidates;
+}
+
+export async function fetchCubeContent(maxItems = 600): Promise<CubeContentItem[]> {
+  const collected: CubeContentItem[] = [];
+  let offset = 0;
+
+  while (collected.length < maxItems) {
+    const remaining = maxItems - collected.length;
+    const pageLimit = Math.min(PAGE_SIZE, Math.max(remaining, 1));
+    let items: CandidateItem[] = [];
+
+    try {
+      items = await fetchPage(pageLimit, offset);
+    } catch (error) {
+      console.warn('[CubeContent] failed to fetch page – aborting pagination.', error);
+      break;
+    }
+
+    if (items.length === 0) {
+      break;
+    }
+
+    const mapped = items.map(mapCandidateToContent);
+    collected.push(...mapped);
+
+    if (items.length < pageLimit) {
+      break;
+    }
+
+    offset += items.length;
+  }
+
+  if (collected.length === 0) {
+    return [];
+  }
+
+  return normalizeCubeContent(collected.slice(0, maxItems));
 }
 
 
