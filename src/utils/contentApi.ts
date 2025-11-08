@@ -142,24 +142,53 @@ function createDeterministicId(item: CandidateItem): string {
   return `item-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function mapCandidateToContent(item: CandidateItem): CubeContentItem {
+function toTimestamp(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  if (!Number.isNaN(parsed)) {
+    return parsed;
+  }
+  return undefined;
+}
+
+function toDayKey(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const year = parsed.getUTCFullYear();
+  const month = `${parsed.getUTCMonth() + 1}`.padStart(2, '0');
+  const day = `${parsed.getUTCDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function mapCandidateToContent(item: CandidateItem, fallbackOrder: number): CubeContentItem {
+  const publishedAt = item.published_at ?? null;
+  const sortValue = toTimestamp(publishedAt);
+  const publishedDay = toDayKey(publishedAt);
+
   return {
     id: createDeterministicId(item),
     title: item.title ?? 'Unbetitelter Beitrag',
     summary: extractSummary(item),
     url: item.url ?? '#',
     imageUrl: pickMediaUrl(item.media),
-    publishedAt: item.published_at ?? null,
+    publishedAt,
     sourceName: item.source_name ?? null,
     category: item.category ?? null,
+    layout: {
+      sortValue: sortValue ?? fallbackOrder,
+      axisValues: publishedDay ? { publishedDay } : undefined,
+    },
   };
 }
 
 const PAGE_SIZE = 200;
 
-async function fetchPage(limit: number, offset: number): Promise<CandidateItem[]> {
+async function fetchPage(limit: number, offset: number, signal?: AbortSignal): Promise<CandidateItem[]> {
   const url = buildRequestUrl(limit, offset);
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'no-store', signal });
   if (!response.ok) {
     console.warn(`[CubeContent] request failed (${response.status}) at offset=${offset} limit=${limit}`);
     return [];
@@ -169,7 +198,7 @@ async function fetchPage(limit: number, offset: number): Promise<CandidateItem[]
   return candidates;
 }
 
-export async function fetchCubeContent(maxItems = 600): Promise<CubeContentItem[]> {
+export async function fetchCubeContent(maxItems = 625, options?: { signal?: AbortSignal }): Promise<CubeContentItem[]> {
   const collected: CubeContentItem[] = [];
   let offset = 0;
 
@@ -179,7 +208,7 @@ export async function fetchCubeContent(maxItems = 600): Promise<CubeContentItem[
     let items: CandidateItem[] = [];
 
     try {
-      items = await fetchPage(pageLimit, offset);
+      items = await fetchPage(pageLimit, offset, options?.signal);
     } catch (error) {
       console.warn('[CubeContent] failed to fetch page – aborting pagination.', error);
       break;
@@ -189,7 +218,7 @@ export async function fetchCubeContent(maxItems = 600): Promise<CubeContentItem[
       break;
     }
 
-    const mapped = items.map(mapCandidateToContent);
+    const mapped = items.map((candidate, index) => mapCandidateToContent(candidate, offset + index));
     collected.push(...mapped);
 
     if (items.length < pageLimit) {

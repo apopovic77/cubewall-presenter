@@ -9,7 +9,7 @@ import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
-import { appConfig, type TextureUvLayout } from './config/AppConfig';
+import { appConfig, type CubeLayoutConfig, type TextureUvLayout } from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
@@ -17,6 +17,12 @@ import { loadCubeContent, resolveContentProviderId } from './content';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
+
+declare global {
+  interface Window {
+    cubewallRefreshContent?: () => Promise<void>;
+  }
+}
 
 function sanitizeSettings(raw: unknown): PresenterSettings {
   if (!raw || typeof raw !== 'object') {
@@ -60,6 +66,19 @@ function mapUvLayout(layout: TextureUvLayout): { sidePattern: 'uniform' | 'alter
     default:
       return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
   }
+}
+
+function mergeLayoutConfig(overrides?: Partial<CubeLayoutConfig>): CubeLayoutConfig {
+  const base = appConfig.layout;
+  const axisKey = overrides?.axisKey && overrides.axisKey.trim() ? overrides.axisKey.trim() : base.axisKey;
+
+  return {
+    mode: overrides?.mode ?? base.mode,
+    axis: overrides?.axis ?? base.axis,
+    axisKey,
+    sortOrder: overrides?.sortOrder ?? base.sortOrder,
+    axisOrder: overrides?.axisOrder ?? base.axisOrder,
+  };
 }
 
 interface InitialSettingsResult {
@@ -165,6 +184,8 @@ export default function App() {
   const initialSourceRef = useRef<'server' | 'cookie'>('cookie');
   const presenterRef = useRef<CubeWallPresenter | null>(null);
   const contentItemsRef = useRef<CubeContentItem[]>([]);
+  const contentLayoutRef = useRef<Partial<CubeLayoutConfig> | null>(null);
+  const refreshControllerRef = useRef<AbortController | null>(null);
   const contentProviderId = resolveContentProviderId();
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
@@ -183,46 +204,91 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const items = await loadCubeContent(contentProviderId);
-      if (cancelled) return;
-      contentItemsRef.current = items;
+  const applyContentToPresenter = useCallback(
+    (items: CubeContentItem[], layoutOverride?: Partial<CubeLayoutConfig>) => {
+      const presenter = presenterRef.current;
+      if (!presenter) return;
+
+      const provider = contentProviderId;
       const currentSettings = settings ?? defaultPresenterSettings;
       const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
-      presenterRef.current?.setContent(items, {
-        repeatContent: contentProviderId === 'default',
-        useFallbackTextures: enableBaseFallbackTextures && contentProviderId === 'default',
-        useDynamicFallbacks: enableBaseFallbackTextures && contentProviderId === 'default' && enablePicsumFallbacks,
-        sidePattern,
-        mirrorTopBottom,
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks, settings]);
 
-  const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
-    setSelection(nextSelection);
-  }, []);
-
-  const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
-    presenterRef.current = presenter;
-    if (presenter && contentItemsRef.current.length > 0) {
-      const provider = resolveContentProviderId();
-      const currentSettings = settings ?? defaultPresenterSettings;
-      const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
-      presenter.setContent(contentItemsRef.current, {
+      presenter.setContent(items, {
         repeatContent: provider === 'default',
         useFallbackTextures: enableBaseFallbackTextures && provider === 'default',
         useDynamicFallbacks: enableBaseFallbackTextures && provider === 'default' && enablePicsumFallbacks,
         sidePattern,
         mirrorTopBottom,
+        layout: mergeLayoutConfig(layoutOverride),
       });
+    },
+    [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks, settings],
+  );
+
+  const refreshContent = useCallback(async () => {
+    const controller = new AbortController();
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = controller;
+
+    try {
+      const payload = await loadCubeContent(contentProviderId);
+      if (controller.signal.aborted) {
+        return;
+      }
+      contentItemsRef.current = payload.items;
+      contentLayoutRef.current = payload.layout ?? null;
+      if (presenterRef.current) {
+        applyContentToPresenter(payload.items, payload.layout ?? undefined);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      console.warn('[CubeWallPresenter] Failed to refresh content', error);
+    } finally {
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null;
+      }
     }
-  }, [enableBaseFallbackTextures, enablePicsumFallbacks, settings]);
+  }, [applyContentToPresenter, contentProviderId]);
+
+  useEffect(() => {
+    void refreshContent();
+    return () => {
+      refreshControllerRef.current?.abort();
+      refreshControllerRef.current = null;
+    };
+  }, [refreshContent]);
+
+  useEffect(() => {
+    const handler = () => {
+      void refreshContent();
+    };
+    const refreshFn = () => refreshContent();
+    window.addEventListener('cubewall:refresh-content', handler);
+    window.cubewallRefreshContent = refreshFn;
+    return () => {
+      window.removeEventListener('cubewall:refresh-content', handler);
+      if (window.cubewallRefreshContent === refreshFn) {
+        Reflect.deleteProperty(window, 'cubewallRefreshContent');
+      }
+    };
+  }, [refreshContent]);
+
+  const handleSelectionChange = useCallback((nextSelection: CubeSelectionInfo | null) => {
+    setSelection(nextSelection);
+  }, []);
+
+  useEffect(() => {
+    if (!presenterRef.current) return;
+    if (contentItemsRef.current.length === 0) return;
+    applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
+  }, [applyContentToPresenter]);
+
+  const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
+    presenterRef.current = presenter;
+    if (presenter && contentItemsRef.current.length > 0) {
+      applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
+    }
+  }, [applyContentToPresenter]);
 
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
     setSettings((prev) => (prev ? { ...prev, ...update } : prev));

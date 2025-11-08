@@ -30,7 +30,11 @@ function resolveLayoutOverrides(): Partial<CubeLayoutConfig> {
 }
 
 export async function loadKoralmbahnContent(): Promise<CubeContentLoadResult> {
-  const items = await fetchCubeContent(DEFAULT_MAX_ITEMS);
+  const maxItemsEnv = Number(
+    import.meta.env.VITE_KORALMBAHN_MAX_ITEMS ?? import.meta.env.VITE_CUBE_CONTENT_MAX_ITEMS ?? DEFAULT_MAX_ITEMS,
+  );
+  const maxItems = Number.isFinite(maxItemsEnv) && maxItemsEnv > 0 ? Math.floor(maxItemsEnv) : DEFAULT_MAX_ITEMS;
+  const items = await fetchCubeContent(maxItems);
   return {
     items,
     layout: resolveLayoutOverrides(),

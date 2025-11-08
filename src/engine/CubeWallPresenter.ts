@@ -823,6 +823,9 @@ export class CubeWallPresenter {
 
         let labelText = template;
         labelText = labelText.split('{{axis}}').join(axis);
+        const axisInfo = this.cubeField.getAxisValueInfo(axis, index);
+        const axisValueLabel = axisInfo?.label ?? '';
+        labelText = labelText.split('{{value}}').join(axisValueLabel);
 
         if (axis === 'rows') {
           labelText = labelText.split('{{row}}').join(index.toString());
@@ -831,7 +834,11 @@ export class CubeWallPresenter {
           labelText = labelText.split('{{col1}}').join('');
 
           let dateText = '';
-          if (hasValidDate) {
+          if (axisInfo?.timestamp !== undefined) {
+            dateText = this.axisLabelDateFormatter.format(new Date(axisInfo.timestamp));
+          } else if (axisValueLabel) {
+            dateText = axisValueLabel;
+          } else if (hasValidDate) {
             const date = new Date(startDateMs + index * this.config.axisLabels.stepDays * DAY_MS);
             if (!Number.isNaN(date.getTime())) {
               dateText = this.axisLabelDateFormatter.format(date);

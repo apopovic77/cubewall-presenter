@@ -15,7 +15,13 @@ import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import type { FloatArray } from '@babylonjs/core/types';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Shaders/default.vertex';
-import { appConfig, type TextureSidePattern, type AxisLabelAxis, type CubeWallConfig } from '../config/AppConfig';
+import {
+  appConfig,
+  type TextureSidePattern,
+  type AxisLabelAxis,
+  type CubeWallConfig,
+  type CubeLayoutConfig,
+} from '../config/AppConfig';
 import type { CubeContentItem } from '../types/content';
 
 export interface CubeSelectionInfo {
@@ -63,6 +69,21 @@ export interface CubeContentOptions {
   useDynamicFallbacks: boolean;
   sidePattern: TextureSidePattern;
   mirrorTopBottom: boolean;
+  layout: CubeLayoutConfig;
+}
+
+interface AxisValueInfo {
+  label: string;
+  raw: string | number | null;
+  timestamp?: number;
+}
+
+interface AxisGroup {
+  key: string;
+  label: string;
+  orderValue: number | string;
+  timestamp?: number;
+  items: CubeContentItem[];
 }
 
 export class CubeField {
@@ -78,17 +99,27 @@ export class CubeField {
   private useSafeFallbackTextures = false;
   private contentItems: CubeContentItem[] = [];
   private physicsActive: boolean = false;
-  private contentOptions: CubeContentOptions = {
-    repeatContent: true,
-    useFallbackTextures: false,
-    useDynamicFallbacks: false,
-    sidePattern: 'uniform',
-    mirrorTopBottom: false,
+  private contentOptions: CubeContentOptions;
+  private axisValueInfo: Record<AxisLabelAxis, (AxisValueInfo | null)[]> = {
+    rows: [],
+    columns: [],
   };
   private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
 
   private getNormalDirection(): number {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
+  }
+
+  private mergeLayoutOptions(overrides?: Partial<CubeLayoutConfig>): CubeLayoutConfig {
+    const base = this.config.layout;
+    const axisKey = overrides?.axisKey && overrides.axisKey.trim() ? overrides.axisKey.trim() : base.axisKey;
+    return {
+      mode: overrides?.mode ?? base.mode,
+      axis: overrides?.axis ?? base.axis,
+      axisKey,
+      sortOrder: overrides?.sortOrder ?? base.sortOrder,
+      axisOrder: overrides?.axisOrder ?? base.axisOrder,
+    };
   }
 
   constructor(scene: Scene, config: CubeWallConfig = appConfig) {
@@ -97,13 +128,18 @@ export class CubeField {
     this.root = new TransformNode('cubeFieldRoot', this.scene);
     this.root.rotationQuaternion = Quaternion.Identity();
     this.root.position.set(0, 0, 0);
-    this.allowFallbackTextures = config.useFallbackImages;
-    this.useDynamicFallbacks = config.useFallbackImages;
-    this.useSafeFallbackTextures = config.useFallbackImages;
-    this.contentOptions.useFallbackTextures = config.useFallbackImages;
-    this.contentOptions.useDynamicFallbacks = config.useFallbackImages;
-    this.contentOptions.sidePattern = config.textureSidePattern;
-    this.contentOptions.mirrorTopBottom = config.textureMirrorTopBottom;
+    const initialLayout: CubeLayoutConfig = { ...config.layout };
+    this.contentOptions = {
+      repeatContent: true,
+      useFallbackTextures: config.useFallbackImages,
+      useDynamicFallbacks: config.useFallbackImages,
+      sidePattern: config.textureSidePattern,
+      mirrorTopBottom: config.textureMirrorTopBottom,
+      layout: initialLayout,
+    };
+    this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
+    this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
+    this.useSafeFallbackTextures = this.contentOptions.useFallbackTextures;
     this.updateRootTransform();
     this.rebuild(config.gridSize);
   }
@@ -155,7 +191,7 @@ export class CubeField {
     }
     const offset = -((gridSize - 1) * (this.config.cubeSize + this.config.cubeSpacing)) / 2;
 
-    this.generateDynamicImageUrls(gridSize * gridSize);
+      this.generateDynamicImageUrls(gridSize * gridSize);
 
     for (let x = 0; x < gridSize; x += 1) {
       for (let z = 0; z < gridSize; z += 1) {
@@ -226,14 +262,14 @@ export class CubeField {
         this.cubes.push(cube);
 
         if (this.allowFallbackTextures) {
-          const flatIndex = x * gridSize + z;
-          const textureUrl = this.pickTextureUrl(flatIndex);
-          if (textureUrl) {
-            this.loadTextureForCell(cube, textureUrl);
-          }
+        const flatIndex = x * gridSize + z;
+        const textureUrl = this.pickTextureUrl(flatIndex);
+        if (textureUrl) {
+          this.loadTextureForCell(cube, textureUrl);
         }
       }
     }
+  }
 
     this.applyContentToCubes();
   }
@@ -256,13 +292,17 @@ export class CubeField {
 
   public setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): void {
     this.contentItems = items;
+    const layoutOverrides = options?.layout;
+    const layout = this.mergeLayoutOptions(layoutOverrides);
     this.contentOptions = {
       repeatContent: options?.repeatContent ?? true,
       useFallbackTextures: options?.useFallbackTextures ?? this.config.useFallbackImages,
       useDynamicFallbacks: options?.useDynamicFallbacks ?? this.config.useFallbackImages,
       sidePattern: options?.sidePattern ?? this.config.textureSidePattern,
       mirrorTopBottom: options?.mirrorTopBottom ?? this.config.textureMirrorTopBottom,
+      layout,
     };
+    this.config.layout = { ...layout };
     this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
     this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
     if (!this.allowFallbackTextures || !this.useDynamicFallbacks) {
@@ -274,12 +314,322 @@ export class CubeField {
     this.refreshTextureMappings();
   }
 
+  public getAxisValueInfo(axis: AxisLabelAxis, index: number): AxisValueInfo | null {
+    const values = this.axisValueInfo[axis];
+    if (!values || index < 0 || index >= values.length) {
+      return null;
+    }
+    return values[index] ?? null;
+  }
+
+  private tryAssignItem(
+    assignments: Map<string, CubeContentItem>,
+    assigned: Set<string>,
+    gridX: number,
+    gridZ: number,
+    item: CubeContentItem | undefined,
+  ): boolean {
+    if (!item) {
+      return false;
+    }
+    const key = `${gridX},${gridZ}`;
+    if (!this.contentOptions.repeatContent && assigned.has(item.id)) {
+      return false;
+    }
+    assignments.set(key, item);
+    if (!this.contentOptions.repeatContent) {
+      assigned.add(item.id);
+    }
+    return true;
+  }
+
+  private extractSortValue(item: CubeContentItem): number | string {
+    const value = item.layout?.sortValue;
+    if (value === null || value === undefined) {
+      return item.id;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+      return value;
+    }
+    return item.id;
+  }
+
+  private compareItemsBySortValue(a: CubeContentItem, b: CubeContentItem, order: 'asc' | 'desc'): number {
+    const aValue = this.extractSortValue(a);
+    const bValue = this.extractSortValue(b);
+    const direction = order === 'asc' ? 1 : -1;
+    if (typeof aValue === 'number' && typeof bValue === 'number') {
+      const diff = aValue - bValue;
+      if (diff !== 0) {
+        return diff * direction;
+      }
+    }
+    const diff = String(aValue).localeCompare(String(bValue));
+    if (diff !== 0) {
+      return diff * direction;
+    }
+    return String(a.id).localeCompare(String(b.id));
+  }
+
+  private compareOrderValues(a: number | string, b: number | string, order: 'asc' | 'desc'): number {
+    if (typeof a === 'number' && typeof b === 'number') {
+      return order === 'asc' ? a - b : b - a;
+    }
+    const aStr = String(a);
+    const bStr = String(b);
+    return order === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+  }
+
+  private normalizeAxisValue(value: unknown): { key: string; label: string; orderValue: number | string; timestamp?: number } | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return null;
+      const label = value.toString();
+      return { key: label, label, orderValue: value };
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const numeric = Number(trimmed);
+      if (Number.isFinite(numeric)) {
+        return { key: trimmed, label: trimmed, orderValue: numeric };
+      }
+      const timestamp = Date.parse(trimmed);
+      if (!Number.isNaN(timestamp)) {
+        return { key: trimmed, label: trimmed, orderValue: timestamp, timestamp };
+      }
+      return { key: trimmed, label: trimmed, orderValue: trimmed };
+    }
+    if (typeof value === 'boolean') {
+      const label = value ? 'true' : 'false';
+      return { key: label, label, orderValue: label };
+    }
+    const label = String(value).trim();
+    if (!label) {
+      return null;
+    }
+    return { key: label, label, orderValue: label };
+  }
+
+  private buildMatrixAssignments(items: CubeContentItem[], assignments: Map<string, CubeContentItem>): void {
+    const gridSize = this.config.gridSize;
+    const repeat = this.contentOptions.repeatContent && items.length > 0;
+    let cursor = 0;
+
+    for (let z = 0; z < gridSize; z += 1) {
+      for (let x = 0; x < gridSize; x += 1) {
+        let item: CubeContentItem | null = null;
+        if (cursor < items.length) {
+          item = items[cursor];
+          cursor += 1;
+        } else if (repeat && items.length > 0) {
+          item = items[cursor % items.length];
+          cursor += 1;
+        }
+        if (item) {
+          assignments.set(`${x},${z}`, item);
+        }
+      }
+    }
+
+    const emptyRows = new Array<AxisValueInfo | null>(gridSize).fill(null);
+    this.axisValueInfo.rows = emptyRows;
+    this.axisValueInfo.columns = [...emptyRows];
+  }
+
+  private buildAxisAssignments(items: CubeContentItem[], assignments: Map<string, CubeContentItem>): void {
+    const gridSize = this.config.gridSize;
+    const layout = this.contentOptions.layout;
+    const axisKey = layout.axisKey;
+    const axisGroups = new Map<string, AxisGroup>();
+    const fallbackItems: CubeContentItem[] = [];
+
+    items.forEach((item) => {
+      const axisValues = item.layout?.axisValues;
+      const rawValue = axisValues?.[axisKey];
+      const normalized = this.normalizeAxisValue(rawValue);
+      if (!normalized) {
+        fallbackItems.push(item);
+        return;
+      }
+      let group = axisGroups.get(normalized.key);
+      if (!group) {
+        group = {
+          key: normalized.key,
+          label: normalized.label,
+          orderValue: normalized.orderValue,
+          timestamp: normalized.timestamp,
+          items: [],
+        };
+        axisGroups.set(normalized.key, group);
+      }
+      group.items.push(item);
+    });
+
+    const groups = Array.from(axisGroups.values());
+    groups.sort((a, b) => {
+      const diff = this.compareOrderValues(a.orderValue, b.orderValue, layout.axisOrder);
+      if (diff !== 0) {
+        return diff;
+      }
+      return a.label.localeCompare(b.label);
+    });
+
+    const limitedGroups = groups.slice(0, gridSize);
+    const overflowGroups = groups.slice(gridSize);
+    overflowGroups.forEach((group) => {
+      fallbackItems.push(...group.items);
+    });
+
+    fallbackItems.sort((a, b) => this.compareItemsBySortValue(a, b, layout.sortOrder));
+
+    const assigned = new Set<string>();
+    let repeatCursor = 0;
+
+    const pullNextFallback = (): CubeContentItem | undefined => {
+      while (fallbackItems.length > 0) {
+        const candidate = fallbackItems.shift()!;
+        if (this.contentOptions.repeatContent || !assigned.has(candidate.id)) {
+          return candidate;
+        }
+      }
+      if (this.contentOptions.repeatContent && items.length > 0) {
+        const candidate = items[repeatCursor % items.length];
+        repeatCursor += 1;
+        return candidate;
+      }
+      return undefined;
+    };
+
+    const rowsInfo: (AxisValueInfo | null)[] = new Array(gridSize).fill(null);
+    const columnsInfo: (AxisValueInfo | null)[] = new Array(gridSize).fill(null);
+
+    if (layout.axis === 'rows') {
+      limitedGroups.forEach((group, rowIndex) => {
+        if (rowIndex >= gridSize) return;
+        rowsInfo[rowIndex] = {
+          label: group.label,
+          raw: group.label,
+          timestamp: group.timestamp,
+        };
+        const sortedItems = [...group.items].sort((a, b) => this.compareItemsBySortValue(a, b, layout.sortOrder));
+        const primaryItems = sortedItems.slice(0, gridSize);
+        const overflow = sortedItems.slice(gridSize);
+        fallbackItems.push(...overflow);
+
+        for (let columnIndex = 0; columnIndex < gridSize; columnIndex += 1) {
+          let candidate: CubeContentItem | undefined;
+          if (columnIndex < primaryItems.length) {
+            candidate = primaryItems[columnIndex];
+          } else {
+            candidate = pullNextFallback();
+          }
+          if (!candidate && this.contentOptions.repeatContent && sortedItems.length > 0) {
+            candidate = sortedItems[columnIndex % sortedItems.length];
+          }
+          if (!candidate) {
+            continue;
+          }
+          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+        }
+      });
+
+      for (let rowIndex = limitedGroups.length; rowIndex < gridSize; rowIndex += 1) {
+        rowsInfo[rowIndex] = null;
+        for (let columnIndex = 0; columnIndex < gridSize; columnIndex += 1) {
+          const candidate = pullNextFallback();
+          if (!candidate) {
+            continue;
+          }
+          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+        }
+      }
+    } else {
+      limitedGroups.forEach((group, columnIndex) => {
+        if (columnIndex >= gridSize) return;
+        columnsInfo[columnIndex] = {
+          label: group.label,
+          raw: group.label,
+          timestamp: group.timestamp,
+        };
+        const sortedItems = [...group.items].sort((a, b) => this.compareItemsBySortValue(a, b, layout.sortOrder));
+        const primaryItems = sortedItems.slice(0, gridSize);
+        const overflow = sortedItems.slice(gridSize);
+        fallbackItems.push(...overflow);
+
+        for (let rowIndex = 0; rowIndex < gridSize; rowIndex += 1) {
+          let candidate: CubeContentItem | undefined;
+          if (rowIndex < primaryItems.length) {
+            candidate = primaryItems[rowIndex];
+          } else {
+            candidate = pullNextFallback();
+          }
+          if (!candidate && this.contentOptions.repeatContent && sortedItems.length > 0) {
+            candidate = sortedItems[rowIndex % sortedItems.length];
+          }
+          if (!candidate) {
+            continue;
+          }
+          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+        }
+      });
+
+      for (let columnIndex = limitedGroups.length; columnIndex < gridSize; columnIndex += 1) {
+        columnsInfo[columnIndex] = null;
+        for (let rowIndex = 0; rowIndex < gridSize; rowIndex += 1) {
+          const candidate = pullNextFallback();
+          if (!candidate) {
+            continue;
+          }
+          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+        }
+      }
+    }
+
+    if (layout.axis === 'rows') {
+      this.axisValueInfo.rows = rowsInfo;
+      this.axisValueInfo.columns = columnsInfo;
+    } else {
+      this.axisValueInfo.columns = columnsInfo;
+      this.axisValueInfo.rows = rowsInfo;
+    }
+  }
+
+  private buildContentAssignments(items: CubeContentItem[]): Map<string, CubeContentItem> {
+    const assignments = new Map<string, CubeContentItem>();
+
+    if (items.length === 0) {
+      const gridSize = this.config.gridSize;
+      const empty = new Array<AxisValueInfo | null>(gridSize).fill(null);
+      this.axisValueInfo.rows = empty;
+      this.axisValueInfo.columns = [...empty];
+      return assignments;
+    }
+
+    if (this.contentOptions.layout.mode === 'axis') {
+      this.buildAxisAssignments(items, assignments);
+    } else {
+      this.buildMatrixAssignments(items, assignments);
+    }
+
+    return assignments;
+  }
+
   public getAxisAnchors(axis: AxisLabelAxis): Vector3[] {
     const anchors: Vector3[] = [];
     if (axis === 'rows') {
-      for (let z = 0; z < this.config.gridSize; z += 1) {
-        const cell = this.cubes.find((c) => c.gridZ === z && c.gridX === 0);
-        if (cell) {
+    for (let z = 0; z < this.config.gridSize; z += 1) {
+      const cell = this.cubes.find((c) => c.gridZ === z && c.gridX === 0);
+      if (cell) {
           anchors.push(cell.mesh.getAbsolutePosition().clone());
         }
       }
@@ -764,14 +1114,11 @@ export class CubeField {
     }
 
     const items = this.contentItems;
-    const length = items.length;
+    const assignments = this.buildContentAssignments(items);
+
     this.cubes.forEach((cube, index) => {
-      const withinRange = index < length;
-      const item = withinRange
-        ? items[index]
-        : options.repeatContent
-            ? items[index % length]
-            : null;
+      const key = `${cube.gridX},${cube.gridZ}`;
+      const item = assignments.get(key) ?? null;
 
       cube.content = item ?? null;
 
