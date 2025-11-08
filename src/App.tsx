@@ -17,6 +17,21 @@ import { loadCubeContent, resolveContentProviderId } from './content';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
+const LEGACY_BILLBOARD_MARKERS = [
+  'nebula headline',
+  'hier könnte deine subheadline',
+  'cube {{gridx}}, {{gridz}}',
+];
+
+function isLegacyBillboardTemplate(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalized = value.toLowerCase().trim();
+  if (!normalized) return true;
+  if (normalized === LEGACY_HTML_CONTENT.toLowerCase()) return true;
+  return LEGACY_BILLBOARD_MARKERS.some((marker) => normalized.includes(marker));
+}
 
 declare global {
   interface Window {
@@ -37,6 +52,9 @@ function sanitizeSettings(raw: unknown): PresenterSettings {
       writable[key as string] = value;
     }
   });
+  if (isLegacyBillboardTemplate(sanitized.billboardHtmlContent)) {
+    sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
+  }
   return sanitized;
 }
 
@@ -48,7 +66,7 @@ function loadCookieSettings(): PresenterSettings {
   try {
     const parsed = JSON.parse(cookieValue);
     const sanitized = sanitizeSettings(parsed);
-    if (!sanitized.billboardHtmlContent || sanitized.billboardHtmlContent === LEGACY_HTML_CONTENT) {
+    if (isLegacyBillboardTemplate(sanitized.billboardHtmlContent)) {
       sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
     }
     return sanitized;

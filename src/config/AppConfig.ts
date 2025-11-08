@@ -207,8 +207,8 @@ export const appConfig: CubeWallConfig = {
     axes: ['rows'],
   },
   gridPlane: {
-    origin: { x: 0, y: 15, z: 0 },
-    normal: { x: 1, y: 0, z: 0 },
+    origin: { x: 0, y: 1, z: 0 },
+    normal: { x: 0, y: 1, z: 0 },
     forward: { x: 0, y: 0, z: 1 },
   },
   layout: {
