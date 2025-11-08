@@ -73,9 +73,10 @@ export interface CubeContentOptions {
 }
 
 interface AxisValueInfo {
-  label: string;
+  label: string | null;
   raw: string | number | null;
   timestamp?: number;
+  count: number;
 }
 
 interface AxisGroup {
@@ -100,7 +101,7 @@ export class CubeField {
   private contentItems: CubeContentItem[] = [];
   private physicsActive: boolean = false;
   private contentOptions: CubeContentOptions;
-  private axisValueInfo: Record<AxisLabelAxis, (AxisValueInfo | null)[]> = {
+  private axisValueInfo: Record<AxisLabelAxis, AxisValueInfo[]> = {
     rows: [],
     columns: [],
   };
@@ -441,9 +442,18 @@ export class CubeField {
       }
     }
 
-    const emptyRows = new Array<AxisValueInfo | null>(gridSize).fill(null);
-    this.axisValueInfo.rows = emptyRows;
-    this.axisValueInfo.columns = [...emptyRows];
+    const emptyRowInfo = Array.from({ length: gridSize }, () => ({
+      label: null,
+      raw: null,
+      count: 0,
+    } as AxisValueInfo));
+    const emptyColumnInfo = Array.from({ length: gridSize }, () => ({
+      label: null,
+      raw: null,
+      count: 0,
+    } as AxisValueInfo));
+    this.axisValueInfo.rows = emptyRowInfo;
+    this.axisValueInfo.columns = emptyColumnInfo;
   }
 
   private buildAxisAssignments(items: CubeContentItem[], assignments: Map<string, CubeContentItem>): void {
@@ -510,8 +520,18 @@ export class CubeField {
       return undefined;
     };
 
-    const rowsInfo: (AxisValueInfo | null)[] = new Array(gridSize).fill(null);
-    const columnsInfo: (AxisValueInfo | null)[] = new Array(gridSize).fill(null);
+    const rowsInfo: AxisValueInfo[] = Array.from({ length: gridSize }, () => ({
+      label: null,
+      raw: null,
+      count: 0,
+    }));
+    const columnsInfo: AxisValueInfo[] = Array.from({ length: gridSize }, () => ({
+      label: null,
+      raw: null,
+      count: 0,
+    }));
+    const rowCounts = new Array(gridSize).fill(0);
+    const columnCounts = new Array(gridSize).fill(0);
 
     if (layout.axis === 'rows') {
       limitedGroups.forEach((group, rowIndex) => {
@@ -520,6 +540,7 @@ export class CubeField {
           label: group.label,
           raw: group.label,
           timestamp: group.timestamp,
+          count: 0,
         };
         const sortedItems = [...group.items].sort((a, b) => this.compareItemsBySortValue(a, b, layout.sortOrder));
         const primaryItems = sortedItems.slice(0, gridSize);
@@ -539,18 +560,28 @@ export class CubeField {
           if (!candidate) {
             continue;
           }
-          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+          if (this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate)) {
+            rowCounts[rowIndex] += 1;
+            columnCounts[columnIndex] += 1;
+          }
         }
       });
 
       for (let rowIndex = limitedGroups.length; rowIndex < gridSize; rowIndex += 1) {
-        rowsInfo[rowIndex] = null;
+        rowsInfo[rowIndex] = rowsInfo[rowIndex] ?? {
+          label: null,
+          raw: null,
+          count: 0,
+        };
         for (let columnIndex = 0; columnIndex < gridSize; columnIndex += 1) {
           const candidate = pullNextFallback();
           if (!candidate) {
             continue;
           }
-          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+          if (this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate)) {
+            rowCounts[rowIndex] += 1;
+            columnCounts[columnIndex] += 1;
+          }
         }
       }
     } else {
@@ -560,6 +591,7 @@ export class CubeField {
           label: group.label,
           raw: group.label,
           timestamp: group.timestamp,
+          count: 0,
         };
         const sortedItems = [...group.items].sort((a, b) => this.compareItemsBySortValue(a, b, layout.sortOrder));
         const primaryItems = sortedItems.slice(0, gridSize);
@@ -579,21 +611,38 @@ export class CubeField {
           if (!candidate) {
             continue;
           }
-          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+          if (this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate)) {
+            rowCounts[rowIndex] += 1;
+            columnCounts[columnIndex] += 1;
+          }
         }
       });
 
       for (let columnIndex = limitedGroups.length; columnIndex < gridSize; columnIndex += 1) {
-        columnsInfo[columnIndex] = null;
+        columnsInfo[columnIndex] = columnsInfo[columnIndex] ?? {
+          label: null,
+          raw: null,
+          count: 0,
+        };
         for (let rowIndex = 0; rowIndex < gridSize; rowIndex += 1) {
           const candidate = pullNextFallback();
           if (!candidate) {
             continue;
           }
-          this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate);
+          if (this.tryAssignItem(assignments, assigned, columnIndex, rowIndex, candidate)) {
+            rowCounts[rowIndex] += 1;
+            columnCounts[columnIndex] += 1;
+          }
         }
       }
     }
+
+    rowsInfo.forEach((info, index) => {
+      info.count = rowCounts[index] ?? 0;
+    });
+    columnsInfo.forEach((info, index) => {
+      info.count = columnCounts[index] ?? 0;
+    });
 
     if (layout.axis === 'rows') {
       this.axisValueInfo.rows = rowsInfo;
@@ -609,9 +658,18 @@ export class CubeField {
 
     if (items.length === 0) {
       const gridSize = this.config.gridSize;
-      const empty = new Array<AxisValueInfo | null>(gridSize).fill(null);
-      this.axisValueInfo.rows = empty;
-      this.axisValueInfo.columns = [...empty];
+      const emptyRows = Array.from({ length: gridSize }, () => ({
+        label: null,
+        raw: null,
+        count: 0,
+      } as AxisValueInfo));
+      const emptyColumns = Array.from({ length: gridSize }, () => ({
+        label: null,
+        raw: null,
+        count: 0,
+      } as AxisValueInfo));
+      this.axisValueInfo.rows = emptyRows;
+      this.axisValueInfo.columns = emptyColumns;
       return assignments;
     }
 
@@ -622,6 +680,22 @@ export class CubeField {
     }
 
     return assignments;
+  }
+
+  public getAxisValuesSnapshot(): {
+    rows: { label: string | null; count: number }[];
+    columns: { label: string | null; count: number }[];
+  } {
+    return {
+      rows: this.axisValueInfo.rows.map((info) => ({
+        label: info.label,
+        count: info.count,
+      })),
+      columns: this.axisValueInfo.columns.map((info) => ({
+        label: info.label,
+        count: info.count,
+      })),
+    };
   }
 
   public getAxisAnchors(axis: AxisLabelAxis): Vector3[] {

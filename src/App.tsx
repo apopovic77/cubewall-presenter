@@ -9,7 +9,7 @@ import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
-import { appConfig, type CubeLayoutConfig, type TextureUvLayout } from './config/AppConfig';
+import { appConfig, type CubeLayoutConfig, type TextureUvLayout, type AxisLabelsMode, type AxisLabelAxis } from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState } from './engine/CubeWallPresenter';
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
@@ -22,6 +22,18 @@ const LEGACY_BILLBOARD_MARKERS = [
   'hier könnte deine subheadline',
   'cube {{gridx}}, {{gridz}}',
 ];
+
+const MATRIX_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> = {
+  mode: 'matrix',
+};
+
+const AXIS_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> = {
+  mode: 'axis',
+  axis: 'rows',
+  axisKey: 'publishedDay',
+  sortOrder: 'desc',
+  axisOrder: 'desc',
+};
 
 function isLegacyBillboardTemplate(value: unknown): boolean {
   if (typeof value !== 'string') {
@@ -204,6 +216,14 @@ export default function App() {
   const contentItemsRef = useRef<CubeContentItem[]>([]);
   const contentLayoutRef = useRef<Partial<CubeLayoutConfig> | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
+  const layoutOverrideRef = useRef<Partial<CubeLayoutConfig> | null>(null);
+  const [layoutOverride, setLayoutOverride] = useState<Partial<CubeLayoutConfig> | null>(null);
+  const axisLabelStateRef = useRef<{
+    enabled: boolean;
+    mode: AxisLabelsMode;
+    template: string;
+    axes: AxisLabelAxis[] | undefined;
+  } | null>(null);
   const contentProviderId = resolveContentProviderId();
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
@@ -223,13 +243,17 @@ export default function App() {
   }, []);
 
   const applyContentToPresenter = useCallback(
-    (items: CubeContentItem[], layoutOverride?: Partial<CubeLayoutConfig>) => {
+    (items: CubeContentItem[], providerLayout?: Partial<CubeLayoutConfig>) => {
       const presenter = presenterRef.current;
       if (!presenter) return;
 
       const provider = contentProviderId;
       const currentSettings = settings ?? defaultPresenterSettings;
       const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
+      const combinedLayoutOverrides: Partial<CubeLayoutConfig> = {
+        ...(providerLayout ?? {}),
+        ...(layoutOverrideRef.current ?? {}),
+      };
 
       presenter.setContent(items, {
         repeatContent: provider === 'default',
@@ -237,7 +261,7 @@ export default function App() {
         useDynamicFallbacks: enableBaseFallbackTextures && provider === 'default' && enablePicsumFallbacks,
         sidePattern,
         mirrorTopBottom,
-        layout: mergeLayoutConfig(layoutOverride),
+        layout: mergeLayoutConfig(combinedLayoutOverrides),
       });
     },
     [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks, settings],
@@ -342,6 +366,13 @@ export default function App() {
   }, [settings?.axisLabelsMode]);
 
   useEffect(() => {
+    layoutOverrideRef.current = layoutOverride;
+    if (presenterRef.current && contentItemsRef.current.length > 0) {
+      applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
+    }
+  }, [layoutOverride, applyContentToPresenter]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'F1') {
         event.preventDefault();
@@ -353,6 +384,80 @@ export default function App() {
       if (event.key === 'F3') {
         event.preventDefault();
         void presenterRef.current?.triggerPhysicsDrop();
+      }
+      if (event.key === 'F4') {
+        event.preventDefault();
+        const currentMode =
+          layoutOverrideRef.current?.mode ??
+          contentLayoutRef.current?.mode ??
+          appConfig.layout.mode;
+        const next =
+          currentMode === 'axis' ? MATRIX_LAYOUT_OVERRIDE : AXIS_LAYOUT_OVERRIDE;
+        console.debug(
+          `[CubeWallPresenter] Layout toggle -> ${
+            next.mode === 'axis' ? 'axis (rows by publishedDay)' : 'matrix (default)'
+          }`,
+        );
+        if (next.mode === 'axis') {
+          setSettings((prev) => {
+            if (!prev) return prev;
+            if (!axisLabelStateRef.current) {
+              axisLabelStateRef.current = {
+                enabled: prev.axisLabelsEnabled,
+                mode: prev.axisLabelsMode,
+                template: prev.axisLabelsTemplate,
+                axes: appConfig.axisLabels.axes ? [...appConfig.axisLabels.axes] : undefined,
+              };
+            }
+            return {
+              ...prev,
+              axisLabelsEnabled: true,
+              axisLabelsMode: 'overlay',
+              axisLabelsTemplate: '{{value}}',
+            };
+          });
+          appConfig.axisLabels.enabled = true;
+          appConfig.axisLabels.mode = 'overlay';
+          appConfig.axisLabels.template = '{{value}}';
+          appConfig.axisLabels.axes = ['rows'];
+        } else {
+          const previous = axisLabelStateRef.current;
+          setSettings((prev) => {
+            if (!prev) return prev;
+            if (!previous) {
+              return {
+                ...prev,
+                axisLabelsEnabled: defaultPresenterSettings.axisLabelsEnabled,
+                axisLabelsMode: defaultPresenterSettings.axisLabelsMode,
+                axisLabelsTemplate: defaultPresenterSettings.axisLabelsTemplate,
+              };
+            }
+            return {
+              ...prev,
+              axisLabelsEnabled: previous.enabled,
+              axisLabelsMode: previous.mode,
+              axisLabelsTemplate: previous.template,
+            };
+          });
+          if (previous) {
+            appConfig.axisLabels.enabled = previous.enabled;
+            appConfig.axisLabels.mode = previous.mode;
+            appConfig.axisLabels.template = previous.template;
+            appConfig.axisLabels.axes = previous.axes ?? ['rows'];
+          } else {
+            appConfig.axisLabels.enabled = defaultPresenterSettings.axisLabelsEnabled;
+            appConfig.axisLabels.mode = defaultPresenterSettings.axisLabelsMode;
+            appConfig.axisLabels.template = defaultPresenterSettings.axisLabelsTemplate;
+            appConfig.axisLabels.axes = ['rows'];
+          }
+          axisLabelStateRef.current = null;
+        }
+        layoutOverrideRef.current = next;
+        setLayoutOverride(next);
+        if (presenterRef.current && contentItemsRef.current.length > 0) {
+          applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
+          presenterRef.current.debugAxisSummary();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);

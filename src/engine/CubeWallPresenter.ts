@@ -583,6 +583,58 @@ export class CubeWallPresenter {
     });
   }
 
+  public debugAxisSummary(): void {
+    const snapshot = this.cubeField.getAxisValuesSnapshot();
+    const rows = snapshot.rows
+      .map((info, index) => {
+        const base = this.formatDateLabelFromInput(info.label) || `Zeile ${index + 1}.`;
+        const plus = this.formatPlusSuffix(info.count);
+        return `${base}${plus}`.trim();
+      })
+      .filter((value) => value.length > 0);
+    const columns = snapshot.columns
+      .map((info, index) => {
+        const base = info.label ?? `Spalte ${index + 1}`;
+        const plus = this.formatPlusSuffix(info.count);
+        return `${base}${plus}`.trim();
+      })
+      .filter((value) => value.length > 0);
+    this.logDebug(
+      `[AxisSummary] rows (first 10): ${rows.slice(0, 10).join(' | ') || '—'}`,
+    );
+    this.logDebug(
+      `[AxisSummary] columns (first 10): ${columns.slice(0, 10).join(' | ') || '—'}`,
+    );
+  }
+
+  private formatDateLabelFromInput(input: string | number | null | undefined): string {
+    if (input === null || input === undefined) {
+      return '';
+    }
+    const date =
+      typeof input === 'number'
+        ? new Date(input)
+        : new Date(input);
+    if (!Number.isNaN(date.getTime())) {
+      const formatted = this.axisLabelDateFormatter.format(date);
+      return formatted.endsWith('.') ? formatted : `${formatted}.`;
+    }
+    if (typeof input === 'string' && input.length > 0) {
+      return input.endsWith('.') ? input : `${input}.`;
+    }
+    return '';
+  }
+
+  private formatPlusSuffix(count: number): string {
+    if (!Number.isFinite(count) || count <= 0) {
+      return '';
+    }
+    const capped = Math.min(count, 12);
+    const icons = Array.from({ length: capped }, () => '(+)').join('');
+    const overflow = count > capped ? ` (+${count - capped})` : '';
+    return `  ${icons}${overflow}`;
+  }
+
   public applySettings(settings: PresenterSettings): void {
     const targetGridSize = Math.min(Math.max(3, Math.round(settings.gridSize)), this.config.maxGridSize);
     if (targetGridSize !== this.config.gridSize) {
@@ -828,29 +880,34 @@ export class CubeWallPresenter {
         labelText = labelText.split('{{value}}').join(axisValueLabel);
 
         if (axis === 'rows') {
-          labelText = labelText.split('{{row}}').join(index.toString());
-          labelText = labelText.split('{{row1}}').join((index + 1).toString());
-          labelText = labelText.split('{{col}}').join('');
-          labelText = labelText.split('{{col1}}').join('');
-
-          let dateText = '';
-          if (axisInfo?.timestamp !== undefined) {
-            dateText = this.axisLabelDateFormatter.format(new Date(axisInfo.timestamp));
-          } else if (axisValueLabel) {
-            dateText = axisValueLabel;
-          } else if (hasValidDate) {
-            const date = new Date(startDateMs + index * this.config.axisLabels.stepDays * DAY_MS);
-            if (!Number.isNaN(date.getTime())) {
-              dateText = this.axisLabelDateFormatter.format(date);
-            }
+          const count = axisInfo?.count ?? 0;
+          const formattedFromTimestamp = this.formatDateLabelFromInput(axisInfo?.timestamp);
+          const formattedFromLabel = this.formatDateLabelFromInput(axisInfo?.label ?? null);
+          const formattedFromValue = this.formatDateLabelFromInput(axisValueLabel);
+          let baseLabel =
+            formattedFromTimestamp ||
+            formattedFromLabel ||
+            formattedFromValue;
+          if (!baseLabel && hasValidDate) {
+            const fallbackDate = startDateMs + index * this.config.axisLabels.stepDays * DAY_MS;
+            baseLabel = this.formatDateLabelFromInput(fallbackDate);
           }
-          labelText = labelText.split('{{date}}').join(dateText);
+          if (!baseLabel) {
+            baseLabel = `Zeile ${index + 1}.`;
+          }
+          const plusSuffix = this.formatPlusSuffix(count);
+          labelText = `${baseLabel}${plusSuffix}`.trim();
         } else {
           labelText = labelText.split('{{col}}').join(index.toString());
           labelText = labelText.split('{{col1}}').join((index + 1).toString());
           labelText = labelText.split('{{row}}').join('');
           labelText = labelText.split('{{row1}}').join('');
           labelText = labelText.split('{{date}}').join('');
+          const plusSuffix = this.formatPlusSuffix(axisInfo?.count ?? 0);
+          if (plusSuffix) {
+            const trimmed = labelText.trim();
+            labelText = trimmed ? `${trimmed}${plusSuffix}` : plusSuffix.trim();
+          }
         }
 
         if (labelText.trim()) {

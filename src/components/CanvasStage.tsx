@@ -38,6 +38,7 @@ export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onD
       onBillboardStateChange,
       onAxisLabelsChange,
     });
+    presenter.applySettings(settings);
     presenterRef.current = presenter;
     onPresenterReady?.(presenter);
     presenter.start();
