@@ -16,6 +16,7 @@ import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
+const ENABLE_SERVER_SETTINGS = import.meta.env.VITE_ENABLE_SETTINGS_SERVER === 'true';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
 const LEGACY_BILLBOARD_MARKERS = [
   'nebula headline',
@@ -117,13 +118,15 @@ interface InitialSettingsResult {
 }
 
 async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
-  const serverSettings = await loadServerSettings();
-  if (serverSettings) {
-    const sanitized = sanitizeSettings(serverSettings);
-    if (!sanitized.billboardHtmlContent || sanitized.billboardHtmlContent === LEGACY_HTML_CONTENT) {
-      sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
+  if (ENABLE_SERVER_SETTINGS) {
+    const serverSettings = await loadServerSettings();
+    if (serverSettings) {
+      const sanitized = sanitizeSettings(serverSettings);
+      if (!sanitized.billboardHtmlContent || sanitized.billboardHtmlContent === LEGACY_HTML_CONTENT) {
+        sanitized.billboardHtmlContent = appConfig.billboard.htmlContent;
+      }
+      return { settings: sanitized, fromServer: true };
     }
-    return { settings: sanitized, fromServer: true };
   }
   return { settings: loadCookieSettings(), fromServer: false };
 }
@@ -347,7 +350,7 @@ export default function App() {
     syncConfigWithSettings(settings);
     setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
     const shouldPersist = hasPersistedRef.current || initialSourceRef.current === 'cookie';
-    if (shouldPersist) {
+    if (ENABLE_SERVER_SETTINGS && shouldPersist) {
       void saveServerSettings(settings);
     }
     hasPersistedRef.current = true;

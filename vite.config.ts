@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     watch: {
-      ignored: ['**/server/settings.json'],
+      ignored: ['**/server/**'],
     },
   },
 });

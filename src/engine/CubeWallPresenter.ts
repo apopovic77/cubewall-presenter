@@ -16,7 +16,8 @@ import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
-import type { LinesMesh } from '@babylonjs/core/Meshes/linesMesh';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 
@@ -92,7 +93,8 @@ export class CubeWallPresenter {
   private skipNextPhysicsClick = false;
   private savedHoverInteraction = true;
   private savedAutoSelect = false;
-  private htmlConnectorLine: LinesMesh | null = null;
+  private htmlConnectorTube: Mesh | null = null;
+  private htmlConnectorMaterial: StandardMaterial | null = null;
 
   public async triggerPhysicsDrop(): Promise<void> {
     if (this.physicsActive) {
@@ -795,9 +797,7 @@ export class CubeWallPresenter {
     }
 
     const attachmentWorld = this.billboardOverlay.getAttachmentWorldPosition();
-    const cubeBounds = this.currentBillboardCell.mesh.getBoundingInfo().boundingBox;
-    const cubeAnchor = cubeBounds.centerWorld.clone();
-    cubeAnchor.y = cubeBounds.maximumWorld.y;
+    const cubeAnchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
     const worldPosition = attachmentWorld.clone();
 
     const renderWidth = engine.getRenderWidth();
@@ -847,9 +847,13 @@ export class CubeWallPresenter {
   }
 
   private disposeHtmlConnectorLine(): void {
-    if (this.htmlConnectorLine) {
-      this.htmlConnectorLine.dispose();
-      this.htmlConnectorLine = null;
+    if (this.htmlConnectorTube) {
+      this.htmlConnectorTube.dispose();
+      this.htmlConnectorTube = null;
+    }
+    if (this.htmlConnectorMaterial) {
+      this.htmlConnectorMaterial.dispose();
+      this.htmlConnectorMaterial = null;
     }
   }
 
@@ -916,18 +920,51 @@ export class CubeWallPresenter {
       ? ray.origin.add(ray.direction.scale(hitDistance))
       : attachmentWorld.clone();
 
-    const points = [cubeAnchor, endPoint];
-    if (this.htmlConnectorLine) {
-      this.htmlConnectorLine = MeshBuilder.CreateLines(
-        this.htmlConnectorLine.name,
-        { points, instance: this.htmlConnectorLine },
+    const startPoint = cubeAnchor.clone();
+    const direction = endPoint.subtract(startPoint);
+    if (direction.lengthSquared() > 1e-6) {
+      direction.normalize();
+      endPoint.subtractInPlace(direction.scale(0.02 * this.config.cubeSize));
+    }
+
+    const path = [startPoint, endPoint];
+    const radius = Math.max(0.002, 0.01 * this.config.cubeSize);
+
+    if (this.htmlConnectorTube) {
+      MeshBuilder.CreateTube(
+        this.htmlConnectorTube.name,
+        {
+          path,
+          radius,
+          instance: this.htmlConnectorTube,
+        },
         this.scene,
       );
     } else {
-      this.htmlConnectorLine = MeshBuilder.CreateLines('htmlBillboardConnector', { points }, this.scene);
-      this.htmlConnectorLine.color = new Color3(0.8, 0.8, 0.9);
-      this.htmlConnectorLine.alpha = 0.85;
-      this.htmlConnectorLine.isPickable = false;
+      this.htmlConnectorTube = MeshBuilder.CreateTube(
+        'htmlBillboardConnector',
+        {
+          path,
+          radius,
+          updatable: true,
+          cap: Mesh.CAP_END,
+        },
+        this.scene,
+      );
+      this.htmlConnectorMaterial = new StandardMaterial('htmlBillboardConnectorMat', this.scene);
+      this.htmlConnectorMaterial.diffuseColor = new Color3(0.3, 0.7, 1.0);
+      this.htmlConnectorMaterial.emissiveColor = new Color3(0.25, 0.6, 0.95);
+      this.htmlConnectorMaterial.specularColor = Color3.Black();
+      this.htmlConnectorMaterial.alpha = 1;
+      this.htmlConnectorMaterial.alphaMode = Engine.ALPHA_DISABLE;
+      this.htmlConnectorMaterial.backFaceCulling = false;
+      this.htmlConnectorMaterial.disableDepthWrite = false;
+      this.htmlConnectorMaterial.forceDepthWrite = true;
+      this.htmlConnectorTube.material = this.htmlConnectorMaterial;
+      this.htmlConnectorTube.isPickable = false;
+      this.htmlConnectorTube.alwaysSelectAsActiveMesh = false;
+      this.htmlConnectorTube.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
+      this.htmlConnectorTube.doNotSyncBoundingInfo = true;
     }
   }
 
