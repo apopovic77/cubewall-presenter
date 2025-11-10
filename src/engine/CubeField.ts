@@ -10,7 +10,8 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { PhysicsAggregate } from '@babylonjs/core/Physics/v2/physicsAggregate';
-import { PhysicsShapeType, PhysicsMotionType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
+import { PhysicsConstraint } from '@babylonjs/core/Physics/v2/physicsConstraint';
+import { PhysicsShapeType, PhysicsMotionType, PhysicsConstraintType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import type { FloatArray } from '@babylonjs/core/types';
 import '@babylonjs/core/Shaders/default.fragment';
@@ -18,6 +19,7 @@ import '@babylonjs/core/Shaders/default.vertex';
 import {
   appConfig,
   type TextureSidePattern,
+  type TextureUvLayout,
   type AxisLabelAxis,
   type CubeWallConfig,
   type CubeLayoutConfig,
@@ -29,6 +31,8 @@ import { SpiralField } from './layouts/fields/SpiralField';
 import { SphereField } from './layouts/fields/SphereField';
 import { HelixField } from './layouts/fields/HelixField';
 import { ChaosField } from './layouts/fields/ChaosField';
+
+const PHYSICS_POP_ROTATION = Math.PI / 2;
 
 export interface CubeSelectionInfo {
   readonly gridX: number;
@@ -62,11 +66,15 @@ export interface CubeCell {
   textureLoaded: boolean;
   content: CubeContentItem | null;
   physicsAggregate?: PhysicsAggregate | null;
+  anchorMesh: Mesh | null;
+  anchorAggregate?: PhysicsAggregate | null;
+  anchorConstraint?: PhysicsConstraint | null;
   isBeingDragged: boolean;
-  physicsAnchor: Vector3 | null;
+  liftAnchor: Vector3 | null;
   textureAspectRatio: number | null;
   textureSidePattern: TextureSidePattern;
   textureMirrorTopBottom: boolean;
+  textureUvLayout: TextureUvLayout;
 }
 
 export interface CubeContentOptions {
@@ -75,6 +83,7 @@ export interface CubeContentOptions {
   useDynamicFallbacks: boolean;
   sidePattern: TextureSidePattern;
   mirrorTopBottom: boolean;
+  uvLayout: TextureUvLayout;
   layout: CubeLayoutConfig;
 }
 
@@ -111,6 +120,7 @@ export class CubeField {
     rows: [],
     columns: [],
   };
+  private physicsAnchorsEnabled = false;
   private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
   private readonly fieldEngine: FieldLayoutEngine;
   private fieldTime = 0;
@@ -145,6 +155,7 @@ export class CubeField {
       useDynamicFallbacks: config.useFallbackImages,
       sidePattern: config.textureSidePattern,
       mirrorTopBottom: config.textureMirrorTopBottom,
+      uvLayout: config.textureUvLayout,
       layout: initialLayout,
     };
     this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
@@ -332,11 +343,15 @@ export class CubeField {
           textureLoaded: false,
           content: null,
           physicsAggregate: null,
+          anchorMesh: null,
+          anchorAggregate: null,
+          anchorConstraint: null,
           isBeingDragged: false,
-          physicsAnchor: null,
+          liftAnchor: null,
           textureAspectRatio: null,
           textureSidePattern: this.contentOptions.sidePattern,
           textureMirrorTopBottom: this.contentOptions.mirrorTopBottom,
+          textureUvLayout: this.contentOptions.uvLayout,
         };
 
         this.cubes.push(cube);
@@ -357,6 +372,7 @@ export class CubeField {
 
   private disposeCubes(): void {
     this.cubes.forEach((cell) => {
+      this.disposePhysicsAnchor(cell);
       cell.physicsAggregate?.dispose();
       cell.mesh.dispose(false, true);
       cell.material.dispose(false, true);
@@ -381,6 +397,7 @@ export class CubeField {
       useDynamicFallbacks: options?.useDynamicFallbacks ?? this.config.useFallbackImages,
       sidePattern: options?.sidePattern ?? this.config.textureSidePattern,
       mirrorTopBottom: options?.mirrorTopBottom ?? this.config.textureMirrorTopBottom,
+      uvLayout: options?.uvLayout ?? this.config.textureUvLayout,
       layout,
     };
     this.config.layout = { ...layout };
@@ -390,6 +407,22 @@ export class CubeField {
       this.dynamicImageUrls = [];
     } else if (!this.useSafeFallbackTextures) {
       this.generateDynamicImageUrls(this.config.gridSize * this.config.gridSize);
+    }
+    console.info('[CubeField] setContent', {
+      items: items.length,
+      withImage: items.filter((item) => !!item.imageUrl).length,
+      layoutMode: layout.mode,
+      repeatContent: this.contentOptions.repeatContent,
+    });
+    if (items.length > 0) {
+      console.debug(
+        '[CubeField] sample items',
+        items.slice(0, 3).map((item) => ({
+          id: item.id,
+          title: item.title,
+          imageUrl: item.imageUrl,
+        })),
+      );
     }
     this.applyContentToCubes();
     this.refreshTextureMappings();
@@ -830,6 +863,7 @@ export class CubeField {
   }
 
   private loadTextureForCell(cell: CubeCell, url: string): void {
+    url = this.normalizeTextureUrl(url);
     if (!url) {
       this.clearTextureForCell(cell);
       return;
@@ -860,10 +894,19 @@ export class CubeField {
         cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
         this.scheduleAspectAdjustment(cell, texture);
         this.picsumErrorCount = 0;
+        console.debug('[CubeField] texture loaded', {
+          grid: { x: cell.gridX, z: cell.gridZ },
+          url,
+          size: texture.getSize(),
+        });
       },
       () => {
         texture.dispose();
         cell.textureLoaded = false;
+        console.warn('[CubeField] texture failed', {
+          grid: { x: cell.gridX, z: cell.gridZ },
+          url,
+        });
         if (url.includes('picsum.photos')) {
           this.picsumErrorCount += 1;
           if (this.picsumErrorCount >= this.config.picsumErrorThreshold) {
@@ -914,6 +957,7 @@ export class CubeField {
     cell.textureAspectRatio = aspect;
     cell.textureSidePattern = this.contentOptions.sidePattern;
     cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
+    cell.textureUvLayout = this.contentOptions.uvLayout;
     const faceUVs = this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom);
     const vertexData = VertexData.CreateBox({
       size: this.config.cubeSize,
@@ -947,17 +991,25 @@ export class CubeField {
     ];
   }
 
-  public updateTextureMirrorOptions(options: Partial<Pick<CubeContentOptions, 'sidePattern' | 'mirrorTopBottom'>>): void {
-    const nextSidePattern = options.sidePattern ?? this.contentOptions.sidePattern;
-    const nextMirrorTopBottom = options.mirrorTopBottom ?? this.contentOptions.mirrorTopBottom;
-    if (nextSidePattern === this.contentOptions.sidePattern && nextMirrorTopBottom === this.contentOptions.mirrorTopBottom) {
+  public updateTextureUvLayout(options: { layout: TextureUvLayout; sidePattern: TextureSidePattern; mirrorTopBottom: boolean }): void {
+    const { layout, sidePattern, mirrorTopBottom } = options;
+    const unchanged =
+      layout === this.contentOptions.uvLayout &&
+      sidePattern === this.contentOptions.sidePattern &&
+      mirrorTopBottom === this.contentOptions.mirrorTopBottom;
+    if (unchanged) {
       return;
     }
-    this.contentOptions.sidePattern = nextSidePattern;
-    this.contentOptions.mirrorTopBottom = nextMirrorTopBottom;
+    this.contentOptions.uvLayout = layout;
+    this.contentOptions.sidePattern = sidePattern;
+    this.contentOptions.mirrorTopBottom = mirrorTopBottom;
+    this.config.textureUvLayout = layout;
+    this.config.textureSidePattern = sidePattern;
+    this.config.textureMirrorTopBottom = mirrorTopBottom;
     this.cubes.forEach((cube) => {
-      cube.textureSidePattern = this.contentOptions.sidePattern;
-      cube.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
+      cube.textureUvLayout = layout;
+      cube.textureSidePattern = sidePattern;
+      cube.textureMirrorTopBottom = mirrorTopBottom;
     });
     this.refreshTextureMappings();
   }
@@ -989,6 +1041,67 @@ export class CubeField {
     return width / height;
   }
 
+  private applyUniformSideUvLayout(cell: CubeCell, uvArray: FloatArray): void {
+    if (cell.textureUvLayout !== 'uniformSides') {
+      return;
+    }
+    const positions = cell.mesh.getVerticesData(VertexBuffer.PositionKind);
+    if (!positions || positions.length === 0) {
+      return;
+    }
+    const faces = this.getFaceVertexIndexMap();
+    const facesToNormalize = [faces.front, faces.right, faces.back, faces.left];
+    const worldUp = Vector3.UpReadOnly;
+
+    facesToNormalize.forEach((indices) => {
+      const points = indices.map((vertexIndex) => {
+        const base = vertexIndex * 3;
+        return new Vector3(positions[base], positions[base + 1], positions[base + 2]);
+      });
+
+      const center = points.reduce((acc, point) => acc.addInPlace(point), Vector3.Zero()).scaleInPlace(1 / points.length);
+      const edge1 = points[1].subtract(points[0]);
+      const edge2 = points[3].subtract(points[0]);
+      const normal = Vector3.Cross(edge1, edge2).normalize();
+      let uAxis = Vector3.Cross(worldUp, normal);
+      if (uAxis.lengthSquared() < 1e-6) {
+        uAxis = Vector3.Cross(Vector3.Forward(), normal);
+        if (uAxis.lengthSquared() < 1e-6) {
+          uAxis = Vector3.Cross(Vector3.Right(), normal);
+        }
+      }
+      uAxis.normalize();
+      const vAxis = Vector3.Cross(normal, uAxis).normalize();
+
+      let minU = Infinity;
+      let maxU = -Infinity;
+      let minV = Infinity;
+      let maxV = -Infinity;
+      const projections = points.map((point) => {
+        const offset = point.subtract(center);
+        const u = Vector3.Dot(offset, uAxis);
+        const v = Vector3.Dot(offset, vAxis);
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+        return { u, v };
+      });
+
+      const rangeU = maxU - minU;
+      const rangeV = maxV - minV;
+      if (rangeU < 1e-6 || rangeV < 1e-6) {
+        return;
+      }
+
+      projections.forEach(({ u, v }, idx) => {
+        const uvIndex = indices[idx] * 2;
+        uvArray[uvIndex] = (u - minU) / rangeU;
+        uvArray[uvIndex + 1] = (v - minV) / rangeV;
+      });
+    });
+  }
+
   private applyAspectCrop(cell: CubeCell, texture: Texture): void {
     const aspect = cell.textureAspectRatio ?? this.computeAspectRatio(texture);
     if (!Number.isFinite(aspect) || aspect <= 0) {
@@ -1001,7 +1114,11 @@ export class CubeField {
     }
 
     const faces = this.getFaceVertexIndexMap();
-    const sideFlips = this.contentOptions.sidePattern === 'alternating'
+    this.applyUniformSideUvLayout(cell, uvData);
+
+    const sidePattern = cell.textureSidePattern ?? this.contentOptions.sidePattern;
+    const mirrorTopBottom = cell.textureMirrorTopBottom ?? this.contentOptions.mirrorTopBottom;
+    const sideFlips = sidePattern === 'alternating'
       ? [false, true, false, true]
       : [false, false, false, false];
 
@@ -1010,7 +1127,7 @@ export class CubeField {
     this.adjustFaceUVs(uvData, faces.right, aspect, sideFlips[1], false);
     this.adjustFaceUVs(uvData, faces.left, aspect, sideFlips[3], false);
     this.adjustFaceUVs(uvData, faces.top, aspect, false, false);
-    this.adjustFaceUVs(uvData, faces.bottom, aspect, false, this.contentOptions.mirrorTopBottom);
+    this.adjustFaceUVs(uvData, faces.bottom, aspect, false, mirrorTopBottom);
 
     cell.mesh.setVerticesData(VertexBuffer.UVKind, uvData, true);
   }
@@ -1066,6 +1183,27 @@ export class CubeField {
     };
   }
 
+  private normalizeTextureUrl(url: string | null | undefined): string {
+    if (!url) {
+      return '';
+    }
+    try {
+      const parsed = new URL(url);
+      if (!parsed.searchParams.has('width')) {
+        parsed.searchParams.set('width', '600');
+      }
+      if (!parsed.searchParams.has('quality')) {
+        parsed.searchParams.set('quality', '85');
+      }
+      if (!parsed.searchParams.has('format')) {
+        parsed.searchParams.set('format', 'jpg');
+      }
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
+
   public getSelectionInfo(): CubeSelectionInfo | null {
     if (!this.selection) return null;
     return {
@@ -1116,12 +1254,11 @@ export class CubeField {
     if (this.selection === cell) return;
     if (this.selection) {
       if (this.physicsActive) {
-        this.selection.physicsAnchor = null;
         this.selection.isBeingDragged = false;
-        this.setCubeMotionType(this.selection, PhysicsMotionType.DYNAMIC);
       }
       this.selection.isSelected = false;
       this.selection.selectionProgress = Math.max(this.selection.selectionProgress, 0);
+      this.selection.liftAnchor = null;
       this.selection = null;
     }
     if (cell) {
@@ -1129,11 +1266,8 @@ export class CubeField {
       this.selection.isSelected = true;
       this.selection.selectionProgress = 0;
       if (this.physicsActive) {
-        cell.physicsAnchor = cell.mesh.position.clone();
-        cell.currentPosition.copyFrom(cell.mesh.position);
-        cell.currentRotation.copyFrom(cell.mesh.rotation);
         cell.isBeingDragged = false;
-        this.setCubeMotionType(cell, PhysicsMotionType.ANIMATED);
+        cell.liftAnchor = null;
       }
     }
     this.cubes.forEach((cube) => {
@@ -1178,12 +1312,18 @@ export class CubeField {
   }
 
   public update(deltaTime: number, sceneTime: number): void {
-    if (this.physicsActive) {
-      this.updatePhysicsDrivenCubes(deltaTime);
-      return;
-    }
     this.updateFieldLayout(deltaTime);
     const normalDirection = this.getNormalDirection();
+    if (this.physicsActive) {
+      const isMorphing = this.fieldEngine.isMorphing();
+      if (this.physicsAnchorsEnabled && isMorphing) {
+        this.ensurePhysicsAnchors();
+        this.updatePhysicsAnchors(deltaTime, sceneTime, normalDirection);
+      } else {
+        this.disposeAllPhysicsAnchors();
+      }
+      return;
+    }
 
     this.cubes.forEach((cube) => {
       cube.individualXRotAccumulator += this.config.individualXRotSpeed * deltaTime;
@@ -1257,6 +1397,7 @@ export class CubeField {
 
     const options = this.contentOptions;
     if (!this.contentItems || this.contentItems.length === 0) {
+      console.warn('[CubeField] applyContentToCubes – no content items, fallbacks=', options.useFallbackTextures);
       this.cubes.forEach((cube, index) => {
         cube.content = null;
         cube.physicsAggregate?.dispose();
@@ -1275,6 +1416,11 @@ export class CubeField {
 
     const items = this.contentItems;
     const assignments = this.buildContentAssignments(items);
+    console.info('[CubeField] applyContentToCubes', {
+      totalCubes: total,
+      contentItems: items.length,
+      assignments: assignments.size,
+    });
 
     this.cubes.forEach((cube, index) => {
       const key = `${cube.gridX},${cube.gridZ}`;
@@ -1316,6 +1462,47 @@ export class CubeField {
     cell.textureAspectRatio = null;
     cell.textureSidePattern = this.contentOptions.sidePattern;
     cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
+    cell.textureUvLayout = this.contentOptions.uvLayout;
+  }
+
+  private createPhysicsAnchor(cube: CubeCell): void {
+    this.disposePhysicsAnchor(cube);
+    const anchorMesh = MeshBuilder.CreateBox(`anchor_${cube.gridX}_${cube.gridZ}`, { size: this.config.cubeSize * 0.9 }, this.scene);
+    anchorMesh.isPickable = false;
+    anchorMesh.visibility = 0;
+    anchorMesh.parent = this.root;
+    anchorMesh.position.copyFrom(cube.mesh.position);
+
+    const anchorAggregate = new PhysicsAggregate(anchorMesh, PhysicsShapeType.BOX, { mass: 0, restitution: 0, friction: 0.8 }, this.scene);
+    anchorAggregate.body.setMotionType(PhysicsMotionType.ANIMATED);
+
+    const dynamicBody = cube.physicsAggregate?.body;
+    let constraint: PhysicsConstraint | null = null;
+    if (dynamicBody && !dynamicBody.isDisposed) {
+      constraint = new PhysicsConstraint(
+        PhysicsConstraintType.BALL_AND_SOCKET,
+        {
+        pivotA: Vector3.Zero(),
+        pivotB: Vector3.Zero(),
+        collision: false,
+        },
+        this.scene,
+      );
+      anchorAggregate.body.addConstraint(dynamicBody, constraint);
+    }
+
+    cube.anchorMesh = anchorMesh;
+    cube.anchorAggregate = anchorAggregate;
+    cube.anchorConstraint = constraint;
+  }
+
+  private disposePhysicsAnchor(cube: CubeCell): void {
+    cube.anchorConstraint?.dispose();
+    cube.anchorConstraint = null;
+    cube.anchorAggregate?.dispose();
+    cube.anchorAggregate = null;
+    cube.anchorMesh?.dispose();
+    cube.anchorMesh = null;
   }
 
   private setCubeMotionType(cube: CubeCell, motion: PhysicsMotionType): void {
@@ -1324,6 +1511,82 @@ export class CubeField {
     body.setMotionType(motion);
     body.setLinearVelocity(Vector3.Zero());
     body.setAngularVelocity(Vector3.Zero());
+  }
+
+  public setPhysicsAnchorsEnabled(enabled: boolean): void {
+    if (this.physicsAnchorsEnabled === enabled) {
+      return;
+    }
+    this.physicsAnchorsEnabled = enabled;
+    if (!enabled) {
+      this.disposeAllPhysicsAnchors();
+    }
+  }
+
+  private ensurePhysicsAnchors(): void {
+    this.cubes.forEach((cube) => {
+      if (!cube.physicsAggregate || cube.physicsAggregate.body?.isDisposed) {
+        return;
+      }
+      if (!cube.anchorAggregate || cube.anchorAggregate.body.isDisposed) {
+        this.createPhysicsAnchor(cube);
+      }
+    });
+  }
+
+  private disposeAllPhysicsAnchors(): void {
+    this.cubes.forEach((cube) => {
+      if (cube.anchorAggregate) {
+        this.disposePhysicsAnchor(cube);
+      }
+    });
+  }
+
+  private updatePhysicsAnchors(deltaTime: number, sceneTime: number, normalDirection: number): void {
+    this.cubes.forEach((cube) => {
+      cube.currentPosition.copyFrom(cube.mesh.position);
+      cube.currentRotation.copyFrom(cube.mesh.rotation);
+
+      cube.individualXRotAccumulator += this.config.individualXRotSpeed * deltaTime;
+
+      if (cube.isSelected) {
+        cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 3);
+      } else {
+        cube.selectionProgress = Math.max(0, cube.selectionProgress - deltaTime * 3);
+      }
+
+      const selectionEased = easeOutCubic(cube.selectionProgress);
+      const selectedYRotation = this.config.selectedCubeRotation * selectionEased;
+      const selectionOffset = new Vector3(0, normalDirection * this.config.selectedCubeLift * selectionEased, 0);
+
+      const waveRotX = this.config.waveAmplitudeRot * Math.sin(cube.basePosition.z * this.config.waveFrequencyRot + sceneTime * 1.2 + cube.wavePhase);
+      const waveRotZ = this.config.waveAmplitudeRot * Math.cos(cube.basePosition.x * this.config.waveFrequencyRot + sceneTime * 1.1 + cube.wavePhase * 0.6);
+
+      const targetPosition = cube.basePosition.clone().add(selectionOffset);
+      const targetRotation = cube.baseRotation.clone();
+      targetRotation.x += cube.individualXRotAccumulator + waveRotX;
+      targetRotation.y += selectedYRotation;
+      targetRotation.z += waveRotZ;
+
+      cube.targetPosition.copyFrom(targetPosition);
+      cube.targetRotation.copyFrom(targetRotation);
+
+      const anchorAggregate = cube.anchorAggregate;
+      const anchorMesh = cube.anchorMesh;
+      if (!anchorAggregate || anchorAggregate.body.isDisposed) {
+        cube.mesh.position.copyFrom(targetPosition);
+        cube.mesh.rotation.copyFrom(targetRotation);
+        return;
+      }
+
+      if (anchorMesh) {
+        anchorMesh.position.copyFrom(targetPosition);
+      }
+
+      const anchorBody = anchorAggregate.body;
+      const anchorRotation = Quaternion.FromEulerAngles(targetRotation.x, targetRotation.y, targetRotation.z);
+      anchorBody.setTargetTransform(targetPosition, anchorRotation);
+    });
   }
 
   private updatePhysicsDrivenCubes(deltaTime: number): void {
@@ -1343,7 +1606,7 @@ export class CubeField {
     this.cubes.forEach((cube) => {
       if (cube.isBeingDragged) {
         cube.selectionProgress = 0;
-        cube.physicsAnchor = null;
+        cube.liftAnchor = null;
         cube.currentPosition.copyFrom(cube.mesh.position);
         cube.currentRotation.copyFrom(cube.mesh.rotation);
         return;
@@ -1351,21 +1614,21 @@ export class CubeField {
 
       if (!cube.isSelected) {
         cube.selectionProgress = 0;
-        cube.physicsAnchor = null;
+        cube.liftAnchor = null;
         cube.currentPosition.copyFrom(cube.mesh.position);
         cube.currentRotation.copyFrom(cube.mesh.rotation);
+        this.setCubeMotionType(cube, PhysicsMotionType.DYNAMIC);
         return;
       }
 
       cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 3);
-      if (!cube.physicsAnchor) {
-        cube.physicsAnchor = cube.mesh.position.clone();
-        cube.currentPosition.copyFrom(cube.mesh.position);
-        cube.currentRotation.copyFrom(cube.mesh.rotation);
+      this.setCubeMotionType(cube, PhysicsMotionType.ANIMATED);
+      if (!cube.liftAnchor) {
+        cube.liftAnchor = cube.mesh.position.clone();
       }
 
       const selectionEased = easeOutCubic(cube.selectionProgress);
-      const anchor = cube.physicsAnchor.clone();
+      const anchor = cube.liftAnchor;
       const targetOffset = physicsUpLocal.scale(lift * selectionEased);
       const targetPosition = anchor.add(targetOffset);
 
@@ -1373,29 +1636,21 @@ export class CubeField {
 
       cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, 0, lerpSpeed);
       cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, 0, lerpSpeed);
-      const targetY = this.config.selectedCubeRotation * selectionEased;
+      const targetY = PHYSICS_POP_ROTATION * selectionEased;
       const newY = Scalar.Lerp(cube.currentRotation.y, targetY, lerpSpeed);
       cube.currentRotation.y = this.config.slowAutorotateEnabled ? newY + autorotate : newY;
 
       cube.mesh.position.copyFrom(cube.currentPosition);
       cube.mesh.rotation.set(cube.currentRotation.x, cube.currentRotation.y, cube.currentRotation.z);
-
-      this.setCubeMotionType(cube, PhysicsMotionType.ANIMATED);
-      const body = cube.physicsAggregate?.body;
-      if (body && !body.isDisposed) {
-        cube.mesh.computeWorldMatrix(true);
-        const worldMatrix = cube.mesh.getWorldMatrix();
-        const worldPosition = worldMatrix.getTranslation();
-        const worldRotation = Quaternion.FromRotationMatrix(worldMatrix.getRotationMatrix());
-        body.setTargetTransform(worldPosition, worldRotation);
-        body.setLinearVelocity(Vector3.Zero());
-        body.setAngularVelocity(Vector3.Zero());
-      }
     });
   }
 
+
   public beginPhysicsDrag(cell: CubeCell): void {
     if (!this.physicsActive) return;
+    if (this.fieldEngine.isMorphing()) {
+      this.disposePhysicsAnchor(cell);
+    }
     const body = cell.physicsAggregate?.body;
     if (body && !body.isDisposed) {
       body.setMotionType(PhysicsMotionType.ANIMATED);
@@ -1403,9 +1658,9 @@ export class CubeField {
       body.setAngularVelocity(Vector3.Zero());
     }
     cell.isBeingDragged = true;
-    cell.physicsAnchor = null;
     cell.isSelected = false;
     cell.selectionProgress = 0;
+    cell.liftAnchor = null;
     if (this.selection === cell) {
       this.selection = null;
     }
@@ -1432,18 +1687,22 @@ export class CubeField {
   public endPhysicsDrag(cell: CubeCell): void {
     if (!this.physicsActive) return;
     cell.isBeingDragged = false;
-    cell.physicsAnchor = null;
+    cell.liftAnchor = null;
     const body = cell.physicsAggregate?.body;
     if (body && !body.isDisposed) {
       body.setMotionType(PhysicsMotionType.DYNAMIC);
       body.setLinearVelocity(Vector3.Zero());
       body.setAngularVelocity(Vector3.Zero());
     }
+    if (this.fieldEngine.isMorphing()) {
+      this.createPhysicsAnchor(cell);
+    }
   }
 
   public enablePhysicsDrop(): void {
     if (this.physicsActive) return;
     this.physicsActive = true;
+    this.physicsAnchorsEnabled = false;
     this.outstandingAspectAdjustments.clear();
     this.selection = null;
     this.cubes.forEach((cube) => {
@@ -1456,10 +1715,10 @@ export class CubeField {
       );
       cube.isSelected = false;
       cube.isBeingDragged = false;
-      cube.physicsAnchor = null;
       cube.selectionProgress = 0;
       cube.currentPosition.copyFrom(cube.mesh.position);
       cube.currentRotation.copyFrom(cube.mesh.rotation);
+      cube.liftAnchor = null;
       const body = cube.physicsAggregate.body;
       if (body && !body.isDisposed) {
         body.setMotionType(PhysicsMotionType.DYNAMIC);
@@ -1472,14 +1731,16 @@ export class CubeField {
   public disablePhysicsDrop(): void {
     if (!this.physicsActive) return;
     this.physicsActive = false;
+    this.physicsAnchorsEnabled = false;
     this.selection = null;
     this.outstandingAspectAdjustments.clear();
     this.cubes.forEach((cube) => {
+      this.disposePhysicsAnchor(cube);
       cube.physicsAggregate?.dispose();
       cube.physicsAggregate = null;
       cube.isBeingDragged = false;
-      cube.physicsAnchor = null;
       cube.selectionProgress = 0;
+      cube.liftAnchor = null;
       cube.currentPosition.copyFrom(cube.mesh.position);
 
       let localRotation: Vector3;
@@ -1503,3 +1764,4 @@ function easeOutCubic(t: number): number {
   const inv = 1 - t;
   return 1 - inv * inv * inv;
 }
+

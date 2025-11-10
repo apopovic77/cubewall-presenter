@@ -1,3 +1,5 @@
+import { useCallback } from 'react';
+import type { MouseEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { CubeSelectionInfo } from '../engine/CubeField';
 
@@ -14,6 +16,15 @@ export function SelectionOverlay({ selection }: SelectionOverlayProps) {
       publishedLabel = date.toLocaleDateString('de-DE');
     }
   }
+
+  const handleOpenArticle = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!item?.url) return;
+      event.preventDefault();
+      window.open(item.url, '_blank', 'noopener,noreferrer');
+    },
+    [item?.url],
+  );
 
   return (
     <AnimatePresence>
@@ -41,7 +52,7 @@ export function SelectionOverlay({ selection }: SelectionOverlayProps) {
               </div>
               {item.summary && <p>{item.summary}</p>}
               {item.url && (
-                <a href={item.url} target="_blank" rel="noreferrer">
+                <a href={item.url} target="_blank" rel="noreferrer" onClick={handleOpenArticle}>
                   Zum Artikel
                 </a>
               )}

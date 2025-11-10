@@ -17,12 +17,15 @@ import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Material } from '@babylonjs/core/Materials/material';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
+import { CameraOrbitController } from './CameraOrbitController';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CONNECTOR_SHADER_NAME = 'htmlConnectorLine';
@@ -106,6 +109,15 @@ export interface BillboardDisplayState {
   onRequestClose: () => void;
 }
 
+export interface BillboardScreenMetrics {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+}
+
 export interface AxisLabelDisplayState {
   id: string;
   label: string;
@@ -135,6 +147,7 @@ export class CubeWallPresenter {
   private readonly billboardStateChange?: (state: BillboardDisplayState | null) => void;
   private readonly axisLabelStateChange?: (labels: AxisLabelDisplayState[]) => void;
   private readonly axis3DLabelManager: Axis3DLabelManager;
+  private readonly cameraController: CameraOrbitController;
   private currentBillboardInfo: CubeSelectionInfo | null = null;
   private currentBillboardCell: CubeCell | null = null;
   private billboardFrameId = 0;
@@ -151,6 +164,7 @@ export class CubeWallPresenter {
     year: 'numeric',
   });
   private physicsActive = false;
+  private physicsMode: 'off' | 'classic' | 'anchor' = 'off';
   private physicsDragCandidate: { cell: CubeCell; startX: number; startY: number } | null = null;
   private activePhysicsDrag: { cell: CubeCell } | null = null;
   private skipNextPhysicsClick = false;
@@ -158,37 +172,61 @@ export class CubeWallPresenter {
   private savedAutoSelect = false;
   private htmlConnectorMesh: Mesh | null = null;
   private htmlConnectorMaterial: ShaderMaterial | null = null;
+  private htmlConnectorTube: Mesh | null = null;
+  private htmlConnectorTubeMaterial: StandardMaterial | null = null;
   private readonly htmlConnectorColor = new Color3(0.3, 0.7, 1.0);
+  private billboardScreenMetrics: BillboardScreenMetrics | null = null;
+
+  public updateBillboardScreenMetrics(metrics: BillboardScreenMetrics | null): void {
+    this.billboardScreenMetrics = metrics;
+    if (this.currentBillboardCell && this.currentBillboardInfo) {
+      this.emitHtmlBillboardState();
+    }
+  }
 
   public async triggerPhysicsDrop(): Promise<void> {
-    if (this.physicsActive) {
-      this.physicsActive = false;
-      this.cubeField.disablePhysicsDrop();
-      this.sceneController.disablePhysics();
-      this.hoverInteractionEnabled = this.savedHoverInteraction;
-      this.autoSelectEnabled = this.savedAutoSelect;
-      this.autoSelectElapsed = 0;
+    if (this.physicsMode === 'off') {
+      this.savedHoverInteraction = this.hoverInteractionEnabled;
+      this.savedAutoSelect = this.autoSelectEnabled;
+      this.cubeField.selectCell(null);
+      this.updateBillboard(null, false);
+      this.selectionChange?.(null);
+      this.billboardStateChange?.(null);
+      this.physicsActive = true;
+      this.physicsMode = 'classic';
+      this.autoSelectEnabled = false;
+      this.hoverInteractionEnabled = false;
       this.physicsDragCandidate = null;
       this.activePhysicsDrag = null;
       this.skipNextPhysicsClick = false;
-      this.refreshAxisAnchors();
+      await this.sceneController.enablePhysicsAsync();
+      this.cubeField.enablePhysicsDrop();
+      this.cubeField.setPhysicsAnchorsEnabled(false);
+      this.debug?.('[Physics] Mode: classic (F3 -> anchor, F3 -> off)');
       return;
     }
 
-    this.savedHoverInteraction = this.hoverInteractionEnabled;
-    this.savedAutoSelect = this.autoSelectEnabled;
-    this.cubeField.selectCell(null);
-    this.updateBillboard(null, false);
-    this.selectionChange?.(null);
-    this.billboardStateChange?.(null);
-    this.physicsActive = true;
-    this.autoSelectEnabled = false;
-    this.hoverInteractionEnabled = false;
+    if (this.physicsMode === 'classic') {
+      this.physicsMode = 'anchor';
+      this.cubeField.setPhysicsAnchorsEnabled(true);
+      this.debug?.('[Physics] Mode: anchor (morph will use anchors)');
+      return;
+    }
+
+    // physicsMode === 'anchor'
+    this.physicsMode = 'off';
+    this.physicsActive = false;
+    this.cubeField.setPhysicsAnchorsEnabled(false);
+    this.cubeField.disablePhysicsDrop();
+    this.sceneController.disablePhysics();
+    this.hoverInteractionEnabled = this.savedHoverInteraction;
+    this.autoSelectEnabled = this.savedAutoSelect;
+    this.autoSelectElapsed = 0;
     this.physicsDragCandidate = null;
     this.activePhysicsDrag = null;
     this.skipNextPhysicsClick = false;
-    await this.sceneController.enablePhysicsAsync();
-    this.cubeField.enablePhysicsDrop();
+    this.refreshAxisAnchors();
+    this.debug?.('[Physics] Mode: off');
   }
 
   private updateDepthOfFieldFocus(cell: CubeCell | null): void {
@@ -215,6 +253,7 @@ export class CubeWallPresenter {
     this.debug = onDebug;
     this.billboardStateChange = onBillboardStateChange;
     this.axisLabelStateChange = onAxisLabelsChange;
+    this.cameraController = new CameraOrbitController(this.sceneController.getCamera(), this.config);
     this.setupPointerInteractions();
 
     this.axis3DLabelManager = new Axis3DLabelManager(this.scene);
@@ -224,11 +263,11 @@ export class CubeWallPresenter {
 
     this.billboardOverlay = new BillboardOverlay({
       scene: this.scene,
-      camera: this.sceneController.getCamera(),
       config: this.config,
       onRequestClose: () => {
         this.cubeField.selectCell(null);
         this.updateBillboard(null, false);
+        this.cameraController.focusOnOverview(true);
       },
     });
 
@@ -256,14 +295,28 @@ export class CubeWallPresenter {
     }, 100);
   }
 
+  private setManualCameraOverride(active: boolean): void {
+    this.cameraController.setManualOverride(active);
+  }
+
   private setupPointerInteractions(): void {
     let lastHoveredId: number | null = null;
-    let pointerDownPos: { x: number; y: number } | null = null;
+    let pointerDownInfo: { x: number; y: number; shouldTriggerClick: boolean } | null = null;
+    let pendingPick: { cell: CubeCell; meshName?: string } | null = null;
+    let pointerClickHandled = false;
 
     this.scene.onPointerObservable.add((pointerInfo: PointerInfo) => {
       if (this.disposed) return;
       switch (pointerInfo.type) {
         case PointerEventTypes.POINTERMOVE: {
+          const moveEvent = pointerInfo.event as PointerEvent | MouseEvent | null;
+          if (pointerDownInfo && moveEvent && 'clientX' in moveEvent && 'clientY' in moveEvent) {
+            const dx = moveEvent.clientX - pointerDownInfo.x;
+            const dy = moveEvent.clientY - pointerDownInfo.y;
+            if (Math.sqrt(dx * dx + dy * dy) > 6) {
+              pointerDownInfo.shouldTriggerClick = false;
+            }
+          }
           if (this.physicsActive) {
             this.handlePhysicsPointerMove(pointerInfo);
             break;
@@ -288,12 +341,21 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERPICK: {
           this.logDebug('POINTERPICK');
+          if (pointerDownInfo && pendingPick) {
+            break;
+          }
           this.handlePick(pointerInfo);
           break;
         }
         case PointerEventTypes.POINTERDOWN: {
           const event = pointerInfo.event as PointerEvent | MouseEvent;
           if ('button' in event && event.button !== 0) break;
+          pointerClickHandled = false;
+          if ('clientX' in event && 'clientY' in event) {
+            pointerDownInfo = { x: event.clientX, y: event.clientY, shouldTriggerClick: true };
+          } else {
+            pointerDownInfo = null;
+          }
           const pickInfo = this.resolvePickInfo(pointerInfo);
           if (pickInfo?.pickedMesh && pickInfo.pickedMesh.isPickable) {
             const cell = this.cubeField.getCellFromMesh(pickInfo.pickedMesh);
@@ -303,6 +365,7 @@ export class CubeWallPresenter {
             }
             if (typeof event.preventDefault === 'function') event.preventDefault();
             if (typeof event.stopPropagation === 'function') event.stopPropagation();
+            this.cameraController.interruptAnimation();
             if (this.physicsActive) {
               const startX = 'clientX' in event ? event.clientX : 0;
               const startY = 'clientY' in event ? event.clientY : 0;
@@ -310,20 +373,20 @@ export class CubeWallPresenter {
               this.activePhysicsDrag = null;
               this.skipNextPhysicsClick = false;
               this.logDebug(`POINTERDOWN physics candidate -> ${pickInfo.pickedMesh.name}`);
+              pendingPick = null;
             } else {
               this.logDebug(`POINTERDOWN on ${pickInfo.pickedMesh.name}`);
               this.physicsDragCandidate = null;
               this.activePhysicsDrag = null;
               this.skipNextPhysicsClick = false;
-              this.handlePick(pointerInfo, pickInfo);
+              pendingPick = { cell, meshName: pickInfo.pickedMesh.name };
             }
-            pointerDownPos = null;
           } else {
             this.logDebug('POINTERDOWN (no pickable mesh) - waiting for POINTERUP/tap');
-            this.billboardOverlay.interruptCameraAnimation();
-            pointerDownPos = 'clientX' in event && 'clientY' in event ? { x: event.clientX, y: event.clientY } : null;
+            this.cameraController.interruptAnimation();
             this.physicsDragCandidate = null;
             this.skipNextPhysicsClick = false;
+            pendingPick = null;
           }
           break;
         }
@@ -339,19 +402,28 @@ export class CubeWallPresenter {
               this.applySelection(this.physicsDragCandidate.cell);
             }
             this.physicsDragCandidate = null;
-            pointerDownPos = null;
+            pointerDownInfo = null;
+            pendingPick = null;
             break;
           }
-          if (pointerDownPos && 'clientX' in event && 'clientY' in event) {
-            const dx = event.clientX - pointerDownPos.x;
-            const dy = event.clientY - pointerDownPos.y;
+          if (pointerDownInfo && 'clientX' in event && 'clientY' in event) {
+            const dx = event.clientX - pointerDownInfo.x;
+            const dy = event.clientY - pointerDownInfo.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
             if (distance <= 6) {
               this.logDebug(`POINTERUP -> treating as click (distance ${distance.toFixed(2)})`);
-              this.handlePick(pointerInfo);
+              if (pointerDownInfo.shouldTriggerClick) {
+                if (pendingPick) {
+                  this.applySelection(pendingPick.cell, pendingPick.meshName);
+                } else {
+                  this.handlePick(pointerInfo);
+                }
+                pointerClickHandled = true;
+              }
             } else {
               this.logDebug(`POINTERUP -> manual camera move (drag distance ${distance.toFixed(2)})`);
-              this.billboardOverlay.captureCurrentCameraState();
+              this.setManualCameraOverride(true);
+              this.cameraController.captureCurrentCameraState();
               if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
                 const dof = this.sceneController.getRenderingPipeline()?.depthOfField;
                 if (dof) {
@@ -361,13 +433,20 @@ export class CubeWallPresenter {
                   this.updateDepthOfFieldFocus(null);
                 }
               }
+              pointerClickHandled = true;
             }
           }
-          pointerDownPos = null;
+          pointerDownInfo = null;
+          pendingPick = null;
           break;
         }
         case PointerEventTypes.POINTERTAP: {
           this.logDebug('POINTERTAP');
+          if (pointerClickHandled) {
+            pointerClickHandled = false;
+            pendingPick = null;
+            break;
+          }
           if (this.physicsActive) {
             if (this.skipNextPhysicsClick) {
               this.skipNextPhysicsClick = false;
@@ -526,6 +605,16 @@ export class CubeWallPresenter {
     this.updateBillboard(alreadySelected ? null : cell);
     this.autoSelectElapsed = 0;
     this.updateDepthOfFieldFocus(alreadySelected ? null : cell);
+    if (this.config.selectionCameraFollowEnabled) {
+      if (!alreadySelected) {
+        const anchor = cell.mesh.getAbsolutePosition().clone();
+        this.cameraController.focusOnTarget(anchor, {
+          mode: this.config.camera.orbitMode,
+          animate: true,
+          followMode: this.config.camera.followMode,
+        });
+      }
+    }
   }
 
   private updateBillboard(cell: CubeCell | null, animate = true): void {
@@ -536,7 +625,11 @@ export class CubeWallPresenter {
       this.hideHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
+      this.billboardScreenMetrics = null;
       return;
+    }
+    if (this.cameraController.isManualOverrideActive() && this.currentBillboardCell !== cell) {
+      this.setManualCameraOverride(false);
     }
     const info = this.cubeField.getSelectionInfo();
     if (!info) {
@@ -548,6 +641,7 @@ export class CubeWallPresenter {
       this.currentBillboardCell = null;
       return;
     }
+    this.billboardScreenMetrics = null;
     this.billboardOverlay.select(cell, info);
     this.selectionChange?.(info);
     this.currentBillboardInfo = info;
@@ -628,6 +722,10 @@ export class CubeWallPresenter {
   }
 
   public setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): void {
+    console.info('[CubeWallPresenter] setContent', {
+      items: items.length,
+      hasOptions: Boolean(options),
+    });
     this.cubeField.setContent(items, options);
     if (this.currentBillboardCell) {
       this.updateBillboard(this.currentBillboardCell, false);
@@ -650,6 +748,23 @@ export class CubeWallPresenter {
     this.logDebug(`[Field] Morphing ${result.current} → ${result.next}`);
   }
 
+  public captureCameraRelativeOffset(): { offset: Vector3; lookAtOffset: Vector3 } | null {
+    const selection = this.currentBillboardCell ?? this.cubeField.getCurrentSelection();
+    if (!selection) {
+      this.logDebug('[Camera] Capture relative offset ignored (no selection).');
+      return null;
+    }
+    const anchor = selection.mesh.getAbsolutePosition().clone();
+    const capture = this.cameraController.captureRelativeOffset(anchor);
+    this.config.camera.relativeOffset.x = capture.offset.x;
+    this.config.camera.relativeOffset.y = capture.offset.y;
+    this.config.camera.relativeOffset.z = capture.offset.z;
+    this.config.camera.relativeLookAtOffset.x = capture.lookAtOffset.x;
+    this.config.camera.relativeLookAtOffset.y = capture.lookAtOffset.y;
+    this.config.camera.relativeLookAtOffset.z = capture.lookAtOffset.z;
+    return capture;
+  }
+
   public start(): void {
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
@@ -661,6 +776,13 @@ export class CubeWallPresenter {
       this.sceneTime += deltaTime * this.config.waveSpeed;
       this.cubeField.update(deltaTime, this.sceneTime);
       this.updateAutoSelection(deltaTime);
+      if (this.config.selectionCameraFollowEnabled && this.config.camera.followMode === 'continuous') {
+        const followCell = this.currentBillboardCell ?? this.cubeField.getCurrentSelection();
+        if (followCell) {
+          this.cameraController.updateContinuousTarget(followCell.mesh.getAbsolutePosition());
+        }
+      }
+      this.cameraController.update(deltaTime);
       this.billboardOverlay.update();
       if (this.config.billboard.mode === 'html' && this.currentBillboardCell && this.currentBillboardInfo) {
         this.emitHtmlBillboardState();
@@ -759,6 +881,16 @@ export class CubeWallPresenter {
     this.config.camera.lookAtOffset.y = settings.cameraLookAtOffsetY;
     this.config.camera.lookAtOffset.z = settings.cameraLookAtOffsetZ;
     this.config.camera.animationSpeedFactor = settings.cameraAnimationSpeed;
+    this.config.camera.orbitMode = settings.cameraOrbitMode;
+    this.config.camera.followMode = settings.cameraFollowMode;
+    this.config.camera.relativeOffset.x = settings.cameraRelativeOffsetX;
+    this.config.camera.relativeOffset.y = settings.cameraRelativeOffsetY;
+    this.config.camera.relativeOffset.z = settings.cameraRelativeOffsetZ;
+    this.config.camera.relativeLookAtOffset.x = settings.cameraRelativeLookAtOffsetX;
+    this.config.camera.relativeLookAtOffset.y = settings.cameraRelativeLookAtOffsetY;
+    this.config.camera.relativeLookAtOffset.z = settings.cameraRelativeLookAtOffsetZ;
+    this.config.camera.autoOrbitEnabled = settings.cameraAutoOrbitEnabled;
+    this.config.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
     this.config.ambientLightIntensity = settings.ambientLightIntensity;
     this.config.ambientLightColorHex = settings.ambientLightColorHex;
     this.config.directionalLightIntensity = settings.directionalLightIntensity;
@@ -780,9 +912,16 @@ export class CubeWallPresenter {
     this.config.billboard.distance = settings.billboardDistance;
     this.config.billboard.angleDegrees = settings.billboardAngleDegrees;
     this.config.textureUvLayout = settings.textureUvLayout;
-    const uvLayout = settings.textureUvLayout === 'mirrorTopAndAlternatingSides'
-      ? { sidePattern: 'alternating' as const, mirrorTopBottom: true }
-      : { sidePattern: 'uniform' as const, mirrorTopBottom: false };
+    const uvLayout = (() => {
+      switch (settings.textureUvLayout) {
+        case 'mirrorTopAndAlternatingSides':
+          return { sidePattern: 'alternating' as const, mirrorTopBottom: true };
+        case 'uniformSides':
+        case 'standard':
+        default:
+          return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
+      }
+    })();
     const { sidePattern, mirrorTopBottom } = uvLayout;
     this.config.textureSidePattern = sidePattern;
     this.config.textureMirrorTopBottom = mirrorTopBottom;
@@ -812,7 +951,17 @@ export class CubeWallPresenter {
     if (this.config.depthOfFieldAutoFocusEnabled) {
       this.updateDepthOfFieldFocus(null);
     }
-    this.cubeField.updateTextureMirrorOptions({
+    this.cameraController.applySettings(settings);
+    if (this.config.selectionCameraFollowEnabled && this.currentBillboardCell) {
+      const anchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
+      this.cameraController.focusOnTarget(anchor, {
+        mode: this.config.camera.orbitMode,
+        animate: false,
+        followMode: this.config.camera.followMode,
+      });
+    }
+    this.cubeField.updateTextureUvLayout({
+      layout: settings.textureUvLayout,
       sidePattern,
       mirrorTopBottom,
     });
@@ -855,6 +1004,17 @@ export class CubeWallPresenter {
     }
     this.updateBillboard(cell);
     this.updateDepthOfFieldFocus(cell);
+    if (this.config.selectionCameraFollowEnabled) {
+      if (this.cameraController.isManualOverrideActive()) {
+        this.setManualCameraOverride(false);
+      }
+      const anchor = cell.mesh.getAbsolutePosition().clone();
+      this.cameraController.focusOnTarget(anchor, {
+        mode: this.config.camera.orbitMode,
+        animate: true,
+        followMode: this.config.camera.followMode,
+      });
+    }
   }
 
   private readonly handleHtmlBillboardClose = () => {
@@ -932,6 +1092,11 @@ export class CubeWallPresenter {
   private hideHtmlConnectorLine(): void {
     if (this.htmlConnectorMesh) {
       this.htmlConnectorMesh.isVisible = false;
+      this.htmlConnectorMesh.setEnabled(false);
+    }
+    if (this.htmlConnectorTube) {
+      this.htmlConnectorTube.isVisible = false;
+      this.htmlConnectorTube.setEnabled(false);
     }
   }
 
@@ -940,6 +1105,10 @@ export class CubeWallPresenter {
     this.htmlConnectorMesh = null;
     this.htmlConnectorMaterial?.dispose();
     this.htmlConnectorMaterial = null;
+    this.htmlConnectorTube?.dispose();
+    this.htmlConnectorTube = null;
+    this.htmlConnectorTubeMaterial?.dispose();
+    this.htmlConnectorTubeMaterial = null;
   }
 
   private ensureHtmlConnectorMesh(): Mesh {
@@ -985,8 +1154,43 @@ export class CubeWallPresenter {
     mesh.alwaysSelectAsActiveMesh = true;
     mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
     mesh.isVisible = false;
+    mesh.setEnabled(false);
 
     this.htmlConnectorMesh = mesh;
+    return mesh;
+  }
+
+  private ensureHtmlConnectorTube(): Mesh {
+    if (this.htmlConnectorTube && this.htmlConnectorTubeMaterial) {
+      return this.htmlConnectorTube;
+    }
+
+    const path = [Vector3.Zero(), new Vector3(0, 0.1, 0)];
+    const mesh = MeshBuilder.CreateTube(
+      'htmlBillboardConnectorTube',
+      {
+        path,
+        radius: 0.01,
+        updatable: true,
+        cap: Mesh.CAP_END,
+      },
+      this.scene,
+    );
+    mesh.isPickable = false;
+    mesh.alwaysSelectAsActiveMesh = true;
+    mesh.setEnabled(false);
+    mesh.isVisible = false;
+
+    this.htmlConnectorTubeMaterial = new StandardMaterial('htmlBillboardConnectorTubeMat', this.scene);
+    this.htmlConnectorTubeMaterial.diffuseColor = this.htmlConnectorColor.clone();
+    this.htmlConnectorTubeMaterial.emissiveColor = this.htmlConnectorColor.clone().scale(0.8);
+    this.htmlConnectorTubeMaterial.specularColor = Color3.Black();
+    this.htmlConnectorTubeMaterial.alpha = 1;
+    this.htmlConnectorTubeMaterial.backFaceCulling = false;
+
+    mesh.material = this.htmlConnectorTubeMaterial;
+
+    this.htmlConnectorTube = mesh;
     return mesh;
   }
 
@@ -997,6 +1201,10 @@ export class CubeWallPresenter {
     featherRatio: number,
     camera: Camera,
   ): void {
+    if (this.htmlConnectorTube) {
+      this.htmlConnectorTube.setEnabled(false);
+      this.htmlConnectorTube.isVisible = false;
+    }
     const mesh = this.ensureHtmlConnectorMesh();
     mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? mesh.renderingGroupId;
     mesh.setEnabled(true);
@@ -1010,6 +1218,37 @@ export class CubeWallPresenter {
       this.htmlConnectorMaterial.setColor3('color', this.htmlConnectorColor);
       this.htmlConnectorMaterial.setVector3('cameraPosition', camera.position.clone());
     }
+  }
+
+  private renderTubeConnector(startPoint: Vector3, endPoint: Vector3, radiusWorld: number): void {
+    if (this.htmlConnectorMesh) {
+      this.htmlConnectorMesh.setEnabled(false);
+      this.htmlConnectorMesh.isVisible = false;
+    }
+
+    const tube = this.ensureHtmlConnectorTube();
+    tube.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
+
+    const path = [startPoint.clone(), endPoint.clone()];
+    const radius = Math.max(0.002, radiusWorld);
+
+    MeshBuilder.CreateTube(
+      tube.name,
+      {
+        path,
+        radius,
+        instance: tube,
+      },
+      this.scene,
+    );
+
+    if (this.htmlConnectorTubeMaterial) {
+      this.htmlConnectorTubeMaterial.diffuseColor = this.htmlConnectorColor.clone();
+      this.htmlConnectorTubeMaterial.emissiveColor = this.htmlConnectorColor.clone().scale(0.8);
+    }
+
+    tube.setEnabled(true);
+    tube.isVisible = true;
   }
 
   private updateHtmlConnectorLine(
@@ -1049,8 +1288,9 @@ export class CubeWallPresenter {
     const clampedX = Math.min(Math.max(state.screenX, CLAMP_MARGIN), state.viewportWidth - CLAMP_MARGIN);
     const clampedY = Math.min(Math.max(state.screenY, CLAMP_MARGIN), state.viewportHeight - CLAMP_MARGIN);
 
-    const anchorScreenX = clampedX;
-    const anchorScreenY = clampedY + 24;
+    const metrics = this.billboardScreenMetrics;
+    const anchorScreenX = metrics?.centerX ?? clampedX;
+    const anchorScreenY = metrics?.centerY ?? clampedY;
 
     const relativeX = (anchorScreenX - canvasRect.left) / canvasRect.width;
     const relativeY = (anchorScreenY - canvasRect.top) / canvasRect.height;
@@ -1108,7 +1348,20 @@ export class CubeWallPresenter {
     const radiusWorld = Math.max(0.0005, diameterWorld * 0.5);
     const featherRatio = Math.min(0.49, featherPx / Math.max(thicknessPx, 0.0001));
 
-    this.renderScreenSpaceConnector(startPoint, endPoint, radiusWorld, featherRatio, camera);
+    switch (this.config.billboard.connectorMode) {
+      case 'tube3d': {
+        const forwardDir = camera.getForwardRay().direction.clone();
+        const tubeTarget = endPoint.clone().subtract(forwardDir.scale(0.02));
+        this.renderTubeConnector(startPoint, tubeTarget, radiusWorld);
+        break;
+      }
+      case 'screenSpace':
+        this.renderScreenSpaceConnector(startPoint, endPoint, radiusWorld, featherRatio, camera);
+        break;
+      default:
+        this.hideHtmlConnectorLine();
+        break;
+    }
   }
 
   private getAxisLabelAxes(): AxisLabelAxis[] {

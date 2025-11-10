@@ -2,9 +2,7 @@ import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
-import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import { Tools } from '@babylonjs/core/Misc/tools';
 import '@babylonjs/core/Shaders/color.vertex';
 import '@babylonjs/core/Shaders/color.fragment';
@@ -18,22 +16,12 @@ import type { CubeWallConfig } from '../config/AppConfig';
 
 export interface BillboardOverlayOptions {
   scene: Scene;
-  camera: ArcRotateCamera;
   config: CubeWallConfig;
   onRequestClose?: () => void;
 }
 
-interface CameraTargetState {
-  lookAt: Vector3;
-  radius: number | null;
-  alpha: number | null;
-  beta: number | null;
-  position: Vector3 | null;
-}
-
 export class BillboardOverlay {
   private readonly scene: Scene;
-  private readonly camera: ArcRotateCamera;
   private readonly config: CubeWallConfig;
   private readonly onRequestClose?: () => void;
 
@@ -49,19 +37,8 @@ export class BillboardOverlay {
   private selectedCell: CubeCell | null = null;
   private isVisible = false;
 
-  private readonly cameraTarget: CameraTargetState = {
-    lookAt: Vector3.Zero(),
-    radius: null,
-    alpha: null,
-    beta: null,
-    position: null,
-  };
-
-  private isAnimatingCamera = false;
-
-  constructor({ scene, camera, config, onRequestClose }: BillboardOverlayOptions) {
+  constructor({ scene, config, onRequestClose }: BillboardOverlayOptions) {
     this.scene = scene;
-    this.camera = camera;
     this.config = config;
     this.onRequestClose = onRequestClose;
 
@@ -129,12 +106,9 @@ export class BillboardOverlay {
       this.plane.setEnabled(false);
     }
     this.updateBillboardPosition();
-    if (this.config.selectionCameraFollowEnabled) {
-      this.flyToSelection(cell);
-    }
   }
 
-  public deselect(animateCameraBack: boolean): void {
+  public deselect(_animateCameraBack: boolean): void {
     if (!this.isVisible) return;
     this.isVisible = false;
     this.plane.setEnabled(false);
@@ -143,11 +117,6 @@ export class BillboardOverlay {
       this.lineMesh = null;
     }
     this.selectedCell = null;
-    if (animateCameraBack && this.config.selectionCameraFollowEnabled) {
-      this.flyToOverview();
-    } else {
-      this.isAnimatingCamera = false;
-    }
   }
 
   public update(): void {
@@ -162,9 +131,6 @@ export class BillboardOverlay {
     } else if (this.selectedCell) {
       // Even in HTML mode keep offset updated for world position projection
       this.updateBillboardPosition();
-    }
-    if (this.isAnimatingCamera) {
-      this.updateCameraLerp();
     }
   }
 
@@ -249,103 +215,6 @@ export class BillboardOverlay {
     this.lineMesh.isPickable = false;
   }
 
-  private flyToSelection(cell: CubeCell): void {
-    const cubePosition = cell.mesh.getAbsolutePosition();
-    if (this.config.camera.useCustomView) {
-      this.cameraTarget.lookAt = cubePosition.add(new Vector3(
-        this.config.camera.lookAtOffset.x,
-        this.config.camera.lookAtOffset.y,
-        this.config.camera.lookAtOffset.z,
-      ));
-      this.cameraTarget.position = cubePosition.add(new Vector3(
-        this.config.camera.offset.x,
-        this.config.camera.offset.y,
-        this.config.camera.offset.z,
-      ));
-      this.cameraTarget.radius = null;
-      this.cameraTarget.alpha = null;
-      this.cameraTarget.beta = null;
-    } else {
-      this.cameraTarget.lookAt = cubePosition.clone();
-      const zoomRadius = this.config.cubeSize * this.config.camera.flyToRadiusFactor;
-      const direction = this.camera.position.subtract(this.camera.target).normalize();
-      this.cameraTarget.position = cubePosition.add(direction.scale(zoomRadius));
-      this.cameraTarget.radius = zoomRadius;
-      this.cameraTarget.alpha = this.camera.alpha;
-      this.cameraTarget.beta = this.camera.beta;
-    }
-    this.isAnimatingCamera = true;
-  }
-
-  private flyToOverview(): void {
-    const lookAt = new Vector3(0, Math.max(1, this.config.gridSize / 10), 0);
-    this.cameraTarget.lookAt = lookAt;
-    this.cameraTarget.radius = this.config.camera.radius;
-    this.cameraTarget.alpha = this.camera.alpha;
-    this.cameraTarget.beta = this.camera.beta;
-    this.cameraTarget.position = null;
-    this.isAnimatingCamera = true;
-  }
-
-  private updateCameraLerp(): void {
-    const speed = this.config.camera.lerpSpeedFactor * this.config.camera.animationSpeedFactor;
-    const stopThresholdPos = 0.01;
-    const stopThresholdAngle = 0.001;
-    const stopThresholdRadius = 0.01;
-
-    let isConverged = true;
-
-    if (!this.camera.target.equalsWithEpsilon(this.cameraTarget.lookAt, stopThresholdPos)) {
-      this.camera.target = Vector3.Lerp(this.camera.target, this.cameraTarget.lookAt, speed);
-      isConverged = false;
-    }
-
-    if (this.cameraTarget.radius !== null) {
-      if (Math.abs(this.camera.radius - this.cameraTarget.radius) > stopThresholdRadius) {
-        this.camera.radius = Scalar.Lerp(this.camera.radius, this.cameraTarget.radius, speed);
-        isConverged = false;
-      } else {
-        this.camera.radius = this.cameraTarget.radius;
-      }
-    }
-
-    if (this.cameraTarget.alpha !== null) {
-      if (Math.abs(this.camera.alpha - this.cameraTarget.alpha) > stopThresholdAngle) {
-        this.camera.alpha = Scalar.Lerp(this.camera.alpha, this.cameraTarget.alpha, speed);
-        isConverged = false;
-      } else {
-        this.camera.alpha = this.cameraTarget.alpha;
-      }
-    }
-
-    if (this.cameraTarget.beta !== null) {
-      if (Math.abs(this.camera.beta - this.cameraTarget.beta) > stopThresholdAngle) {
-        this.camera.beta = Scalar.Lerp(this.camera.beta, this.cameraTarget.beta, speed);
-        this.camera.beta = Scalar.Clamp(this.camera.beta, this.camera.lowerBetaLimit ?? 0.01, this.camera.upperBetaLimit ?? Math.PI - 0.01);
-        isConverged = false;
-      } else {
-        this.camera.beta = this.cameraTarget.beta;
-      }
-    }
-
-    if (this.cameraTarget.position && !this.camera.position.equalsWithEpsilon(this.cameraTarget.position, stopThresholdPos)) {
-      this.camera.position = Vector3.Lerp(this.camera.position, this.cameraTarget.position, speed);
-      isConverged = false;
-    }
-
-    if (isConverged) {
-      this.isAnimatingCamera = false;
-      if (this.cameraTarget.position) {
-        this.camera.position.copyFrom(this.cameraTarget.position);
-      }
-      this.camera.target.copyFrom(this.cameraTarget.lookAt);
-    }
-  }
-
-  public getCurrentOffset(): Vector3 {
-    return this.offsetVector.clone();
-  }
-
   public getAttachmentWorldPosition(): Vector3 {
     return this.root.getAbsolutePosition().clone();
   }
@@ -359,18 +228,6 @@ export class BillboardOverlay {
       this.lineMesh = null;
     }
     this.root.dispose();
-  }
-
-  public interruptCameraAnimation(): void {
-    this.isAnimatingCamera = false;
-  }
-
-  public captureCurrentCameraState(): void {
-    this.cameraTarget.lookAt = this.camera.target.clone();
-    this.cameraTarget.radius = this.camera.radius;
-    this.cameraTarget.alpha = this.camera.alpha;
-    this.cameraTarget.beta = this.camera.beta;
-    this.cameraTarget.position = this.camera.position.clone();
   }
 }
 

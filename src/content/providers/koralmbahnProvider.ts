@@ -1,4 +1,4 @@
-import type { CubeContentLoadResult } from '../index';
+import type { CubeContentLoadResult } from '../registry';
 import type { CubeLayoutConfig, CubeLayoutMode, CubeLayoutOrder } from '../../config/AppConfig';
 import { fetchCubeContent } from '../../utils/contentApi';
 

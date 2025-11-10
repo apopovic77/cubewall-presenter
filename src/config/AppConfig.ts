@@ -9,7 +9,9 @@ export type BillboardConnectorMode = 'htmlSvg' | 'tube3d' | 'screenSpace';
 export type AxisLabelsMode = 'overlay' | '3d';
 export type AxisLabelAxis = 'rows' | 'columns';
 export type TextureSidePattern = 'uniform' | 'alternating';
-export type TextureUvLayout = 'standard' | 'mirrorTopAndAlternatingSides';
+export type TextureUvLayout = 'standard' | 'mirrorTopAndAlternatingSides' | 'uniformSides';
+export type CameraOrbitMode = 'flyTo' | 'relativeOffset';
+export type CameraFollowMode = 'focusOnce' | 'continuous';
 export type CubeLayoutMode = 'matrix' | 'axis';
 export type CubeLayoutAxis = AxisLabelAxis;
 export type CubeLayoutOrder = 'asc' | 'desc';
@@ -75,6 +77,12 @@ export interface CubeWallConfig {
     offset: { x: number; y: number; z: number };
     lookAtOffset: { x: number; y: number; z: number };
     animationSpeedFactor: number;
+    orbitMode: CameraOrbitMode;
+    followMode: CameraFollowMode;
+    relativeOffset: { x: number; y: number; z: number };
+    relativeLookAtOffset: { x: number; y: number; z: number };
+    autoOrbitEnabled: boolean;
+    autoOrbitSpeed: number;
   };
   tintColor: Color3;
   ambientLightColorHex: string;
@@ -128,7 +136,7 @@ export const appConfig: CubeWallConfig = {
   selectedCubeLift: 1.6,
   selectedCubePopOutDistance: 0.5,
   selectedCubeNormalDirection: 1,
-  selectedCubeRotation: Math.PI / 4,
+  selectedCubeRotation: Math.PI / 2,
   textureUvLayout: 'standard',
   textureSidePattern: 'uniform',
   textureMirrorTopBottom: false,
@@ -180,6 +188,12 @@ export const appConfig: CubeWallConfig = {
     offset: { x: 0, y: 1.5, z: -3 },
     lookAtOffset: { x: 0, y: 0.5, z: 0 },
     animationSpeedFactor: 1.0,
+    orbitMode: 'flyTo',
+    followMode: 'focusOnce',
+    relativeOffset: { x: 0, y: 2.5, z: 6 },
+    relativeLookAtOffset: { x: 0, y: 0, z: 0 },
+    autoOrbitEnabled: false,
+    autoOrbitSpeed: 0.25,
   },
   tintColor: new Color3(0.3, 0.5, 1.0),
   ambientLightColorHex: '#ffffff',

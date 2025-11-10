@@ -4,6 +4,8 @@ import type {
   BackgroundType,
   BillboardMode,
   BillboardConnectorMode,
+  CameraFollowMode,
+  CameraOrbitMode,
   DepthOfFieldBlurLevel,
   TextureUvLayout,
 } from './AppConfig';
@@ -51,6 +53,16 @@ export interface PresenterSettings {
   cameraLookAtOffsetY: number;
   cameraLookAtOffsetZ: number;
   cameraAnimationSpeed: number;
+  cameraOrbitMode: CameraOrbitMode;
+  cameraFollowMode: CameraFollowMode;
+  cameraRelativeOffsetX: number;
+  cameraRelativeOffsetY: number;
+  cameraRelativeOffsetZ: number;
+  cameraRelativeLookAtOffsetX: number;
+  cameraRelativeLookAtOffsetY: number;
+  cameraRelativeLookAtOffsetZ: number;
+  cameraAutoOrbitEnabled: boolean;
+  cameraAutoOrbitSpeed: number;
   ambientLightIntensity: number;
   ambientLightColorHex: string;
   directionalLightIntensity: number;
@@ -129,6 +141,16 @@ export const defaultPresenterSettings: PresenterSettings = {
   cameraLookAtOffsetY: appConfig.camera.lookAtOffset.y,
   cameraLookAtOffsetZ: appConfig.camera.lookAtOffset.z,
   cameraAnimationSpeed: appConfig.camera.animationSpeedFactor,
+  cameraOrbitMode: appConfig.camera.orbitMode,
+  cameraFollowMode: appConfig.camera.followMode,
+  cameraRelativeOffsetX: appConfig.camera.relativeOffset.x,
+  cameraRelativeOffsetY: appConfig.camera.relativeOffset.y,
+  cameraRelativeOffsetZ: appConfig.camera.relativeOffset.z,
+  cameraRelativeLookAtOffsetX: appConfig.camera.relativeLookAtOffset.x,
+  cameraRelativeLookAtOffsetY: appConfig.camera.relativeLookAtOffset.y,
+  cameraRelativeLookAtOffsetZ: appConfig.camera.relativeLookAtOffset.z,
+  cameraAutoOrbitEnabled: appConfig.camera.autoOrbitEnabled,
+  cameraAutoOrbitSpeed: appConfig.camera.autoOrbitSpeed,
   ambientLightIntensity: appConfig.ambientLightIntensity,
   ambientLightColorHex: appConfig.ambientLightColorHex,
   directionalLightIntensity: appConfig.directionalLightIntensity,

@@ -1,12 +1,14 @@
-import { useMemo } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { BillboardDisplayState } from '../engine/CubeWallPresenter';
 import type { PresenterSettings } from '../config/PresenterSettings';
 import { appConfig } from '../config/AppConfig';
+import type { BillboardScreenMetrics } from '../engine/CubeWallPresenter';
 
 export interface HtmlBillboardProps {
   state: BillboardDisplayState;
   settings: PresenterSettings;
+  onLayout?: (metrics: BillboardScreenMetrics | null) => void;
 }
 
 const CLAMP_MARGIN = 24;
@@ -74,8 +76,87 @@ function buildHtml(template: string, state: BillboardDisplayState): string {
   return html.replace(/\n/g, '<br/>');
 }
 
-export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
+export function HtmlBillboard({ state, settings, onLayout }: HtmlBillboardProps) {
   const html = useMemo(() => buildHtml(settings.billboardHtmlContent, state), [settings.billboardHtmlContent, state]);
+ 
+   const containerRef = useRef<HTMLDivElement | null>(null);
+   const [layoutMetrics, setLayoutMetrics] = useState<BillboardScreenMetrics | null>(null);
+
+   useLayoutEffect(() => {
+     if (!state.isVisible) {
+       setLayoutMetrics((prev) => {
+         if (prev) {
+           onLayout?.(null);
+         }
+         return null;
+       });
+       return undefined;
+     }
+
+     const node = containerRef.current;
+     if (!node) {
+       return undefined;
+     }
+
+     const updateMetrics = () => {
+       const rect = node.getBoundingClientRect();
+       const next: BillboardScreenMetrics = {
+         left: rect.left,
+         top: rect.top,
+         width: rect.width,
+         height: rect.height,
+         centerX: rect.left + rect.width / 2,
+         centerY: rect.top + rect.height / 2,
+       };
+       setLayoutMetrics((prev) => {
+         const changed =
+           !prev ||
+           Math.abs(prev.centerX - next.centerX) > 0.5 ||
+           Math.abs(prev.centerY - next.centerY) > 0.5 ||
+           Math.abs(prev.width - next.width) > 0.5 ||
+           Math.abs(prev.height - next.height) > 0.5;
+         if (changed) {
+           onLayout?.(next);
+           return next;
+         }
+         return prev;
+       });
+     };
+
+     updateMetrics();
+
+     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateMetrics) : null;
+     observer?.observe(node);
+     window.addEventListener('resize', updateMetrics);
+     window.addEventListener('scroll', updateMetrics, true);
+
+     return () => {
+       observer?.disconnect();
+       window.removeEventListener('resize', updateMetrics);
+       window.removeEventListener('scroll', updateMetrics, true);
+     };
+   }, [state.isVisible, state.frameId, onLayout]);
+ 
+   useEffect(() => {
+     const node = containerRef.current;
+     if (!node) return undefined;
+     const handleClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const anchor = target.closest('a');
+      if (!(anchor instanceof HTMLAnchorElement)) {
+        return;
+      }
+      const href = anchor.getAttribute('href');
+      if (!href) return;
+      event.preventDefault();
+      window.open(href, '_blank', 'noopener,noreferrer');
+    };
+    node.addEventListener('click', handleClick);
+    return () => {
+      node.removeEventListener('click', handleClick);
+    };
+  }, [html]);
 
   if (!state.content) {
     return null;
@@ -87,8 +168,10 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
     settings.billboardMode === 'html' && settings.billboardConnectorMode === 'htmlSvg';
   const lineStartX = clamp(state.cubeScreenX, 0, state.viewportWidth);
   const lineStartY = clamp(state.cubeScreenY + 30, 0, state.viewportHeight);
-  const lineEndX = clampedX;
-  const lineEndY = clampedY + 24;
+  const measuredCenterX = layoutMetrics?.centerX ?? clampedX;
+  const measuredCenterY = layoutMetrics?.centerY ?? clampedY;
+  const lineEndX = measuredCenterX;
+  const lineEndY = measuredCenterY;
   const connectorValid =
     showSvgConnector &&
     Number.isFinite(lineStartX) &&
@@ -108,7 +191,8 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 12 }}
             transition={{ type: 'spring', damping: 20, stiffness: 220 }}
-            style={{ left: clampedX, top: clampedY }}
+            style={{ left: clampedX, top: clampedY, transform: 'translate(-50%, -50%)' }}
+            ref={containerRef}
           >
             <button type="button" className="cw-html-billboard__close" onClick={state.onRequestClose}>
               ×

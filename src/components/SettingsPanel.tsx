@@ -19,6 +19,7 @@ export interface SettingsPanelProps {
   position: { x: number; y: number };
   onPositionChange: (pos: { x: number; y: number }) => void;
   meta?: SettingsPanelMeta;
+  onCaptureRelativeOrbit?: () => void;
 }
 
 interface SliderSpec {
@@ -59,6 +60,7 @@ const SLIDERS: SliderSpec[] = [
   { key: 'cameraLookAtOffsetY', label: 'LookAt Offset Y', min: -5, max: 5, step: 0.1, formatter: (v) => v.toFixed(1), isEnabled: (s) => s.useCustomCamera },
   { key: 'cameraLookAtOffsetZ', label: 'LookAt Offset Z', min: -5, max: 5, step: 0.1, formatter: (v) => v.toFixed(1), isEnabled: (s) => s.useCustomCamera },
   { key: 'cameraAnimationSpeed', label: 'Camera Anim Speed', min: 0.1, max: 5, step: 0.1, formatter: (v) => v.toFixed(1), isEnabled: (s) => s.useCustomCamera },
+  { key: 'cameraAutoOrbitSpeed', label: 'Auto Orbit Speed (rad/s)', min: 0, max: 2, step: 0.01, formatter: (v) => v.toFixed(2), isEnabled: (s) => s.cameraAutoOrbitEnabled && s.selectionCameraFollowEnabled },
   { key: 'ambientLightIntensity', label: 'Ambient Intensity', min: 0, max: 2, step: 0.01, formatter: (v) => v.toFixed(2) },
   { key: 'directionalLightIntensity', label: 'Direct Intensity', min: 0, max: 2, step: 0.01, formatter: (v) => v.toFixed(2) },
   { key: 'directionalLightDirectionX', label: 'Light Dir X', min: -1, max: 1, step: 0.02, formatter: (v) => v.toFixed(2) },
@@ -105,7 +107,7 @@ function formatTimestamp(iso?: string | null): string {
   return `${date.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 }
 
-export function SettingsPanel({ isOpen, settings, onChange, onClose, position, onPositionChange, meta }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, settings, onChange, onClose, position, onPositionChange, meta, onCaptureRelativeOrbit }: SettingsPanelProps) {
   const handleInput = (spec: SliderSpec) => (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number.parseFloat(event.target.value);
     onChange({ [spec.key]: value } as Partial<PresenterSettings>);
@@ -244,6 +246,45 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                 <span>Camera follows selected cube</span>
               </label>
               <label className="cw-settings__toggle">
+                <span>Camera Orbit Mode</span>
+                <select
+                  value={settings.cameraOrbitMode}
+                  onChange={(event) => onChange({ cameraOrbitMode: event.target.value as PresenterSettings['cameraOrbitMode'] })}
+                >
+                  <option value="flyTo">Fly-To Radius</option>
+                  <option value="relativeOffset">Relative Offset</option>
+                </select>
+              </label>
+              <label className="cw-settings__toggle">
+                <span>Camera Follow Mode</span>
+                <select
+                  value={settings.cameraFollowMode}
+                  onChange={(event) => onChange({ cameraFollowMode: event.target.value as PresenterSettings['cameraFollowMode'] })}
+                  disabled={!settings.selectionCameraFollowEnabled}
+                >
+                  <option value="focusOnce">Focus on Selection</option>
+                  <option value="continuous">Continuous Follow</option>
+                </select>
+              </label>
+              <label className="cw-settings__toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.cameraAutoOrbitEnabled}
+                  onChange={(event) => onChange({ cameraAutoOrbitEnabled: event.target.checked })}
+                  disabled={!settings.selectionCameraFollowEnabled}
+                />
+                <span>Auto Orbit Selected Cube</span>
+              </label>
+              <div className="cw-settings__toggle">
+                <button
+                  type="button"
+                  onClick={onCaptureRelativeOrbit}
+                  disabled={!onCaptureRelativeOrbit}
+                >
+                  Capture Relative Offset from Camera
+                </button>
+              </div>
+              <label className="cw-settings__toggle">
                 <input
                   type="checkbox"
                   checked={settings.depthOfFieldEnabled}
@@ -294,8 +335,9 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                   value={settings.textureUvLayout}
                   onChange={(event) => onChange({ textureUvLayout: event.target.value as PresenterSettings['textureUvLayout'] })}
                 >
-                  <option value="standard">Standard (all faces aligned)</option>
+                  <option value="standard">Standard (wrap with 90° rotation)</option>
                   <option value="mirrorTopAndAlternatingSides">Mirror bottom, alternate side faces</option>
+                  <option value="uniformSides">Uniform side orientation (no rotation)</option>
                 </select>
               </label>
               <label className="cw-settings__toggle">
@@ -356,6 +398,88 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                   <option value="overlay">Screen Overlay</option>
                   <option value="3d">3D Labels</option>
                 </select>
+              </label>
+            </div>
+            <div className="cw-settings__inputs" data-disabled={settings.cameraOrbitMode !== 'relativeOffset'}>
+              <label className="cw-settings__input">
+                <span>Relative Offset X</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeOffsetX}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeOffsetX: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
+              </label>
+              <label className="cw-settings__input">
+                <span>Relative Offset Y</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeOffsetY}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeOffsetY: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
+              </label>
+              <label className="cw-settings__input">
+                <span>Relative Offset Z</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeOffsetZ}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeOffsetZ: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
+              </label>
+            </div>
+            <div className="cw-settings__inputs" data-disabled={settings.cameraOrbitMode !== 'relativeOffset'}>
+              <label className="cw-settings__input">
+                <span>LookAt Offset X</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeLookAtOffsetX}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeLookAtOffsetX: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
+              </label>
+              <label className="cw-settings__input">
+                <span>LookAt Offset Y</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeLookAtOffsetY}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeLookAtOffsetY: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
+              </label>
+              <label className="cw-settings__input">
+                <span>LookAt Offset Z</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={settings.cameraRelativeLookAtOffsetZ}
+                  onChange={(event) => {
+                    const parsed = Number.parseFloat(event.target.value);
+                    onChange({ cameraRelativeLookAtOffsetZ: Number.isFinite(parsed) ? parsed : 0 });
+                  }}
+                  disabled={settings.cameraOrbitMode !== 'relativeOffset'}
+                />
               </label>
             </div>
             <div className="cw-settings__inputs">

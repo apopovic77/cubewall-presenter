@@ -88,9 +88,9 @@ function pickMediaUrl(media?: CandidateMedia[] | null): string | null {
 
     if (storageId != null) {
       if (storageMime.startsWith('application/pdf')) {
-        return buildStorageMediaUrl(storageId, { format: 'jpg', width: 1280, quality: 85 });
+        return buildStorageMediaUrl(storageId, { format: 'jpg', width: 600, quality: 85 });
       }
-      return buildStorageMediaUrl(storageId, { format: 'webp', width: 1600, quality: 85 });
+      return buildStorageMediaUrl(storageId, { format: 'jpg', width: 600, quality: 85 });
     }
 
     const candidate = item?.url ?? item?.thumbnail_url ?? null;
@@ -188,7 +188,14 @@ const PAGE_SIZE = 200;
 
 async function fetchPage(limit: number, offset: number, signal?: AbortSignal): Promise<CandidateItem[]> {
   const url = buildRequestUrl(limit, offset);
-  const response = await fetch(url, { cache: 'no-store', signal });
+  console.info(`[CubeContent] fetchPage limit=${limit} offset=${offset} url=${url}`);
+  let response: Response;
+  try {
+    response = await fetch(url, { cache: 'no-store', signal });
+  } catch (error) {
+    console.error('[CubeContent] request failed (network)', error);
+    throw error;
+  }
   if (!response.ok) {
     console.warn(`[CubeContent] request failed (${response.status}) at offset=${offset} limit=${limit}`);
     return [];
@@ -199,6 +206,7 @@ async function fetchPage(limit: number, offset: number, signal?: AbortSignal): P
 }
 
 export async function fetchCubeContent(maxItems = 625, options?: { signal?: AbortSignal }): Promise<CubeContentItem[]> {
+  console.info(`[CubeContent] fetchCubeContent maxItems=${maxItems}`);
   const collected: CubeContentItem[] = [];
   let offset = 0;
 
@@ -229,10 +237,23 @@ export async function fetchCubeContent(maxItems = 625, options?: { signal?: Abor
   }
 
   if (collected.length === 0) {
+    console.warn('[CubeContent] API returned zero items.');
     return [];
   }
 
-  return normalizeCubeContent(collected.slice(0, maxItems));
+  const normalized = normalizeCubeContent(collected.slice(0, maxItems));
+  const missingImages = normalized.filter((item) => !item.imageUrl);
+  console.info(
+    `[CubeContent] normalized=${normalized.length}, withImage=${normalized.length - missingImages.length}, missingImage=${missingImages.length}`,
+  );
+  if (missingImages.length > 0) {
+    console.warn(
+      '[CubeContent] Items without imageUrl:',
+      missingImages.slice(0, 5).map(({ id, title }) => ({ id, title })),
+    );
+  }
+
+  return normalized;
 }
 
 

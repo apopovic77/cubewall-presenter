@@ -8,11 +8,11 @@ export class SpiralField implements FieldDefinition {
   public sample(index: number, time: number, context: FieldContext, target: Vector3): Vector3 {
     const total = Math.max(1, context.totalCount);
     const t = index / total;
-    const turns = 3 + Math.sin(time * 0.2) * 1.5;
-    const angle = turns * Math.PI * 2 * t + time * 0.4;
-    const radiusBase = (context.gridSize * (context.cubeSize + context.cubeSpacing)) * 0.35;
+    const turns = (4 + Math.sin(time * 0.2) * 1.5) * 3;
+    const angle = turns * Math.PI * 2 * t + time * 0.00001;
+    const radiusBase = (context.gridSize * (context.cubeSize + context.cubeSpacing)) * 0.9;
     const radius = radiusBase * (0.2 + 0.8 * t);
-    const yRange = radiusBase * 0.8;
+    const yRange = radiusBase * 10;
 
     const y = (t - 0.5) * 2 * yRange + Math.sin(time * 0.7 + t * Math.PI * 6) * context.cubeSize * 0.4;
     const x = Math.cos(angle) * radius;
