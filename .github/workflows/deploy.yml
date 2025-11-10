@@ -67,23 +67,23 @@ jobs:
 
             echo "Configuring systemd service for settings server..."
             cat <<'EOF' > "$SERVICE_PATH"
-[Unit]
-Description=CubeWall Presenter Settings API
-After=network.target
+            [Unit]
+            Description=CubeWall Presenter Settings API
+            After=network.target
 
-[Service]
-Type=simple
-WorkingDirectory=/var/code/cubewall-presenter
-ExecStart=/usr/bin/node server/settingsServer.mjs
-Environment=NODE_ENV=production
-Environment=PORT=5001
-Restart=always
-StandardOutput=append:/var/log/cubewall-settings.log
-StandardError=append:/var/log/cubewall-settings-error.log
+            [Service]
+            Type=simple
+            WorkingDirectory=/var/code/cubewall-presenter
+            ExecStart=/usr/bin/node server/settingsServer.mjs
+            Environment=NODE_ENV=production
+            Environment=PORT=5001
+            Restart=always
+            StandardOutput=append:/var/log/cubewall-settings.log
+            StandardError=append:/var/log/cubewall-settings-error.log
 
-[Install]
-WantedBy=multi-user.target
-EOF
+            [Install]
+            WantedBy=multi-user.target
+            EOF
 
             touch /var/log/cubewall-settings.log /var/log/cubewall-settings-error.log
 
