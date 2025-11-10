@@ -244,7 +244,7 @@ export class CubeField {
       waveAmplitudeY: this.config.waveAmplitudeY,
       waveFrequencyY: this.config.waveFrequencyY,
       wavePhaseSpread: this.config.wavePhaseSpread,
-      globalScale: this.config.fieldGlobalScale,
+      globalScale: Math.max(0.1, this.config.fieldGlobalScale),
     });
 
     const effectiveTime = initial ? 0 : this.fieldTime;

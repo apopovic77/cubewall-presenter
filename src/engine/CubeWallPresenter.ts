@@ -733,8 +733,8 @@ export class CubeWallPresenter {
     this.config.waveSpeed = settings.waveSpeed;
     this.config.waveAmplitudeY = settings.waveAmplitudeY;
     this.config.waveAmplitudeRot = settings.waveAmplitudeRot;
-    this.config.fieldAnimationSpeed = settings.fieldAnimationSpeed;
-    this.config.fieldGlobalScale = settings.fieldGlobalScale;
+    this.config.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
+    this.config.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
     this.hoverInteractionEnabled = settings.enableHoverInteraction;
     this.autoSelectEnabled = settings.autoSelectEnabled;
     this.autoSelectInterval = Math.max(1, settings.autoSelectInterval);

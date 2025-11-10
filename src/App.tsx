@@ -141,8 +141,8 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.waveSpeed = settings.waveSpeed;
   appConfig.waveAmplitudeY = settings.waveAmplitudeY;
   appConfig.waveAmplitudeRot = settings.waveAmplitudeRot;
-  appConfig.fieldAnimationSpeed = settings.fieldAnimationSpeed;
-  appConfig.fieldGlobalScale = settings.fieldGlobalScale;
+  appConfig.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
+  appConfig.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
   appConfig.interactionRadius = settings.interactionRadius;
   appConfig.interactionLift = settings.interactionLift;
   appConfig.selectedCubeRotation = settings.selectedCubeRotation;
