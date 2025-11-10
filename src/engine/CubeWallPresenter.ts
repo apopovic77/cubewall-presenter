@@ -123,7 +123,7 @@ export class CubeWallPresenter {
 
   private updateDepthOfFieldFocus(cell: CubeCell | null): void {
     if (!this.config.depthOfFieldEnabled || !this.config.depthOfFieldAutoFocusEnabled) return;
-    const targetCell = cell ?? this.cubeField.getCurrentSelection();
+    const targetCell = cell ?? this.cubeField.getCurrentSelection() ?? this.cubeField.getCenterCell();
     if (!targetCell) return;
     const camera = this.sceneController.getCamera();
     const distance = camera.position.subtract(targetCell.mesh.getAbsolutePosition()).length();

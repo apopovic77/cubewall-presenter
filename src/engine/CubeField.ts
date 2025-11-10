@@ -1001,6 +1001,16 @@ export class CubeField {
     return this.selection;
   }
 
+  public getCenterCell(): CubeCell | null {
+    if (this.cubes.length === 0) return null;
+    const centerIndex = Math.floor(this.config.gridSize / 2);
+    const centerCandidates = this.cubes.filter((cube) => cube.gridX === centerIndex && cube.gridZ === centerIndex);
+    if (centerCandidates.length > 0) {
+      return centerCandidates[0];
+    }
+    return this.cubes[0] ?? null;
+  }
+
   public getRandomCell(excludeSelected = true): CubeCell | null {
     if (this.cubes.length === 0) return null;
     if (!excludeSelected) {

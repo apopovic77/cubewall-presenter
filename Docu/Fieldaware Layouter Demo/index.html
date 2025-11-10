@@ -1,0 +1,1057 @@
+import React, { useRef, useState, useEffect, useMemo } from "react";
+import * as THREE from "three";
+
+const TWO_PI = Math.PI * 2;
+const PHI = (Math.sqrt(5) - 1) / 2;
+
+// GPU Shader Materials
+const vertexShader = `
+attribute float particleIndex;
+uniform float time;
+uniform float totalParticles;
+uniform int currentField;
+uniform int nextField;
+uniform float morphProgress;
+uniform float globalScale;
+uniform float animationSpeed;
+uniform float particleSize;
+
+// Texture uniforms
+uniform bool useTexture;
+uniform sampler2D textureMap;
+uniform vec2 textureAspect; // width/height ratio
+uniform float textureScale;
+
+// Field parameters
+uniform vec3 waveParams1; // amplitude, frequency, speed
+uniform vec3 waveParams2; // secondary amp, freq, speed
+uniform vec2 waveParams3; // ripple amount, ripple speed
+uniform vec3 dnaParams; // radius, height, turns
+uniform vec3 mobiusParams; // radius, width, twist
+uniform vec3 roseParams; // petals, radius, depth
+uniform vec3 galaxyParams; // arms, tightness, bulge
+uniform vec3 chaosParams; // chaos, frequency, scale
+uniform vec3 crystalParams; // size, vibration, type
+
+varying vec3 vColor;
+varying vec2 vUV;
+varying float vUseTexture;
+
+#define PI 3.14159265359
+#define TWO_PI 6.28318530718
+#define PHI 0.618033988749
+
+// Utility functions
+float easeInOutCubic(float x) {
+  return x < 0.5 ? 4.0 * x * x * x : 1.0 - pow(-2.0 * x + 2.0, 3.0) / 2.0;
+}
+
+// Field functions
+vec3 circleField(float u, float i) {
+  float angle = u * TWO_PI;
+  float wobble = sin(time * animationSpeed + angle * 3.0) * 0.5;
+  float breathe = sin(time * animationSpeed * 0.8) * 0.3;
+  float r = (4.0 + wobble + breathe) * globalScale;
+  
+  return vec3(
+    r * cos(angle),
+    sin(time * animationSpeed * 0.5 + angle) * 0.3 * globalScale,
+    r * sin(angle)
+  );
+}
+
+vec3 spiralField(float u, float i) {
+  float dynamicTurns = 4.0 + sin(time * animationSpeed * 0.3) * 0.8;
+  float theta = u * dynamicTurns * TWO_PI + time * animationSpeed * 0.4;
+  float pulse = sin(time * animationSpeed * 1.2 + u * 8.0) * 0.2;
+  float radius = (0.5 + 2.0 * u + pulse) * globalScale;
+  float y = (6.0 * u - 3.0 + sin(time * animationSpeed * 0.6 + u * 5.0) * 0.3) * globalScale;
+  
+  return vec3(
+    radius * cos(theta),
+    y,
+    radius * sin(theta)
+  );
+}
+
+vec3 sphereField(float u, float i) {
+  float y = 1.0 - 2.0 * u;
+  float radiusAtY = sqrt(1.0 - y * y);
+  float theta = 2.0 * PI * i * PHI + time * animationSpeed * 0.1;
+  
+  float breathe = sin(time * animationSpeed + i * 0.01) * 0.4;
+  float noise = sin(time * animationSpeed * 2.0 + theta * 3.0 + y * 8.0) * 0.15;
+  float dynamicRadius = (4.0 + breathe + noise) * globalScale;
+  
+  return vec3(
+    dynamicRadius * radiusAtY * cos(theta),
+    dynamicRadius * y,
+    dynamicRadius * radiusAtY * sin(theta)
+  );
+}
+
+vec3 torusField(float u, float i) {
+  float phi = 2.0 * PI * u + time * animationSpeed * 0.2;
+  float psi = mod(i * PHI, 1.0) * 2.0 * PI + time * animationSpeed * 0.8;
+  
+  float majorWave = sin(time * animationSpeed * 1.5 + u * 6.0) * 0.3;
+  float minorWave = cos(time * animationSpeed * 1.5 * 1.3 + psi * 2.0) * 0.15;
+  float dynMajorR = (4.0 + majorWave) * globalScale;
+  float dynMinorR = (1.4 + minorWave) * globalScale;
+  
+  return vec3(
+    (dynMajorR + dynMinorR * cos(psi)) * cos(phi),
+    dynMinorR * sin(psi) + sin(time * animationSpeed * 0.7) * 0.2 * globalScale,
+    (dynMajorR + dynMinorR * cos(psi)) * sin(phi)
+  );
+}
+
+vec3 helixField(float u, float i) {
+  float dynamicTurns = 5.0 + sin(time * animationSpeed * 0.6) * 1.2;
+  float theta = u * dynamicTurns * TWO_PI + time * animationSpeed * 0.5;
+  float wobble = sin(time * animationSpeed * 1.8 + u * 10.0) * 0.4;
+  float dynamicRadius = (3.0 + wobble) * globalScale;
+  
+  return vec3(
+    dynamicRadius * cos(theta),
+    (8.0 * u - 4.0 + sin(time * animationSpeed + theta) * 0.4) * globalScale,
+    dynamicRadius * sin(theta)
+  );
+}
+
+vec3 planeField(float u, float i) {
+  float gridSize = ceil(sqrt(totalParticles));
+  float row = floor(i / gridSize);
+  float col = mod(i, gridSize);
+  
+  // Use texture aspect ratio if texture is active
+  vec2 aspectRatio = useTexture ? textureAspect : vec2(4.0, 3.0);
+  
+  float x = ((col / (gridSize - 1.0)) * 2.0 - 1.0) * aspectRatio.x * globalScale;
+  float z = ((row / (gridSize - 1.0)) * 2.0 - 1.0) * aspectRatio.y * globalScale;
+  
+  if (useTexture) {
+    // For texture mode, create a flat plane
+    float y = sin(time * animationSpeed * 0.5 + x * 0.1 + z * 0.1) * 0.1 * globalScale;
+    return vec3(x, y, z);
+  } else {
+    // Regular wave field
+    float distFromCenter = sqrt(x * x + z * z);
+    float primaryWave = sin(x * waveParams1.y + time * animationSpeed * waveParams1.z) * waveParams1.x;
+    float secondaryWave = cos(z * waveParams2.y + time * animationSpeed * waveParams2.z) * waveParams2.x;
+    float ripples = sin(distFromCenter * 1.5 - time * animationSpeed * waveParams3.y) * waveParams3.x;
+    float y = (primaryWave + secondaryWave * 0.7 + ripples * 0.5) * globalScale;
+    return vec3(x, y, z);
+  }
+}
+
+vec3 dnaField(float u, float i) {
+  float theta = u * dnaParams.z * TWO_PI + time * animationSpeed * 0.5;
+  float y = (dnaParams.y * u - dnaParams.y * 0.5) * globalScale;
+  
+  float strand = mod(i, 2.0);
+  float offset = strand * PI;
+  float baseConnect = sin(theta * 4.0 + time * animationSpeed) * 0.2;
+  
+  return vec3(
+    dnaParams.x * cos(theta + offset) * globalScale,
+    y + baseConnect * globalScale,
+    dnaParams.x * sin(theta + offset) * globalScale
+  );
+}
+
+vec3 mobiusField(float u, float i) {
+  float v = (mod(i * PHI, 1.0) - 0.5) * mobiusParams.y;
+  float theta = u * TWO_PI + time * animationSpeed * 0.1;
+  float halfTheta = theta * 0.5 * mobiusParams.z;
+  
+  float breathe = sin(time * animationSpeed * 0.8) * 0.2 + 1.0;
+  
+  return vec3(
+    ((mobiusParams.x + v * cos(halfTheta)) * cos(theta)) * globalScale * breathe,
+    (v * sin(halfTheta) + sin(time * animationSpeed * 1.2 + theta) * 0.1) * globalScale,
+    ((mobiusParams.x + v * cos(halfTheta)) * sin(theta)) * globalScale * breathe
+  );
+}
+
+vec3 roseField(float u, float i) {
+  float theta = u * TWO_PI + time * animationSpeed * 0.2;
+  float r = roseParams.y * abs(sin(roseParams.x * theta)) + sin(time * animationSpeed * 2.0 + theta) * 0.3;
+  float bloom = sin(time * animationSpeed * 0.6) * 0.2 + 1.0;
+  
+  return vec3(
+    r * cos(theta) * globalScale * bloom,
+    (sin(time * animationSpeed * 2.0 + theta * roseParams.x) * roseParams.z + cos(r * 2.0 + time * animationSpeed) * 0.2) * globalScale,
+    r * sin(theta) * globalScale * bloom
+  );
+}
+
+vec3 galaxyField(float u, float i) {
+  float angle = u * galaxyParams.x * TWO_PI * galaxyParams.y + time * animationSpeed * 0.3;
+  float radius = u * 6.0 + sin(time * animationSpeed * 1.5 + angle) * 0.5;
+  float armOffset = sin(angle * 0.5 + time * animationSpeed) * 0.3;
+  
+  float bulgeFactor = exp(-radius * 0.3) * galaxyParams.z;
+  
+  return vec3(
+    (radius * cos(angle) + armOffset) * globalScale,
+    (sin(angle * 5.0 + time * animationSpeed * 2.0) * 0.3 + bulgeFactor) * globalScale,
+    (radius * sin(angle) + cos(angle * 3.0 + time * animationSpeed) * 0.2) * globalScale
+  );
+}
+
+vec3 chaosField(float u, float i) {
+  float t = time * animationSpeed * chaosParams.y;
+  
+  float x = 4.0 * sin(u * 10.0 * chaosParams.x + t) + cos(u * 15.0 + t * 1.1) * 2.0;
+  float y = 4.0 * cos(u * 15.0 * chaosParams.x + t * 1.1) + sin(u * 8.0 + t * 0.8) * 1.5;
+  float z = 2.0 * sin(u * 8.0 * chaosParams.x + t * 0.8) + cos(u * 12.0 + t * 1.3);
+  
+  return vec3(x, y, z) * globalScale;
+}
+
+vec3 crystalField(float u, float i) {
+  float gridSize = ceil(pow(totalParticles, 1.0/3.0));
+  
+  float x = ((mod(i, gridSize) / max(gridSize - 1.0, 1.0)) - 0.5) * crystalParams.x;
+  float y = ((mod(floor(i / gridSize), gridSize) / max(gridSize - 1.0, 1.0)) - 0.5) * crystalParams.x;
+  float z = ((floor(i / (gridSize * gridSize)) / max(gridSize - 1.0, 1.0)) - 0.5) * crystalParams.x;
+  
+  float vib = sin(time * animationSpeed * 3.0 + x + y + z) * crystalParams.y;
+  float harmonic = cos(time * animationSpeed * 2.0 + x * 2.0 + y * 2.0) * crystalParams.y * 0.5;
+  
+  return vec3(
+    (x + vib) * globalScale,
+    (y + vib + harmonic) * globalScale,
+    (z + vib) * globalScale
+  );
+}
+
+vec3 evaluateField(int fieldIndex, float u, float i) {
+  if (fieldIndex == 0) return circleField(u, i);
+  else if (fieldIndex == 1) return spiralField(u, i);
+  else if (fieldIndex == 2) return sphereField(u, i);
+  else if (fieldIndex == 3) return torusField(u, i);
+  else if (fieldIndex == 4) return helixField(u, i);
+  else if (fieldIndex == 5) return planeField(u, i);
+  else if (fieldIndex == 6) return dnaField(u, i);
+  else if (fieldIndex == 7) return mobiusField(u, i);
+  else if (fieldIndex == 8) return roseField(u, i);
+  else if (fieldIndex == 9) return galaxyField(u, i);
+  else if (fieldIndex == 10) return chaosField(u, i);
+  else if (fieldIndex == 11) return crystalField(u, i);
+  return vec3(0.0);
+}
+
+void main() {
+  float u = (particleIndex + 0.5) / totalParticles;
+  
+  vec3 posA = evaluateField(currentField, u, particleIndex);
+  vec3 posB = evaluateField(nextField, u, particleIndex);
+  vec3 finalPos = mix(posA, posB, easeInOutCubic(morphProgress));
+  
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(finalPos, 1.0);
+  gl_PointSize = particleSize * 100.0; // Scale up for visibility
+  
+  // Calculate UV coordinates for texture mapping
+  if (useTexture && (currentField == 5 || nextField == 5)) {
+    float gridSize = ceil(sqrt(totalParticles));
+    float row = floor(particleIndex / gridSize);
+    float col = mod(particleIndex, gridSize);
+    
+    // UV coordinates (0-1 range)
+    vec2 uv = vec2(
+      col / (gridSize - 1.0),
+      1.0 - row / (gridSize - 1.0) // Flip Y for correct texture orientation
+    );
+    
+    // Scale UV based on particle size for texture detail
+    vUV = uv * textureScale;
+    vUseTexture = 1.0;
+  } else {
+    vUseTexture = 0.0;
+  }
+  
+  // Color based on particle index for rainbow effect
+  float t = particleIndex / totalParticles;
+  float hue = t * 0.8;
+  vColor = vec3(
+    0.5 + 0.5 * sin(hue * TWO_PI + 0.0),
+    0.5 + 0.5 * sin(hue * TWO_PI + TWO_PI/3.0),
+    0.5 + 0.5 * sin(hue * TWO_PI + 4.0*TWO_PI/3.0)
+  );
+}
+`;
+
+const fragmentShader = `
+varying vec3 vColor;
+varying vec2 vUV;
+varying float vUseTexture;
+
+uniform sampler2D textureMap;
+
+void main() {
+  // Circular particle shape
+  vec2 center = gl_PointCoord - vec2(0.5);
+  float dist = length(center);
+  
+  if (dist > 0.5) discard;
+  
+  float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+  
+  vec3 finalColor;
+  
+  if (vUseTexture > 0.5) {
+    // Use texture color
+    vec4 texColor = texture2D(textureMap, vUV);
+    finalColor = texColor.rgb;
+    alpha *= texColor.a;
+  } else {
+    // Use rainbow color
+    finalColor = vColor;
+  }
+  
+  gl_FragColor = vec4(finalColor, alpha * 0.9);
+}
+`;
+
+const FIELD_NAMES = [
+  "Wobbling Circle", "Twisting Spiral", "Breathing Sphere", "Undulating Torus",
+  "Wobbling Helix", "Wave Plane", "DNA Double Helix", "Möbius Strip",
+  "Blooming Rose", "Spiral Galaxy", "Chaos Attractor", "Crystal Lattice"
+];
+
+function GPUParticleSystem({ 
+  canvasRef, count, journeyMode, journeyProgress, fieldAIndex, fieldBIndex, 
+  morphProgress, globalScale, animationSpeed, autoCameraRotation, cameraRotationSpeed,
+  particleSize, waveParams = {}, textureFile = null, textureScale = 1.0
+}) {
+  const sceneRef = useRef();
+  const rendererRef = useRef();
+  const cameraRef = useRef();
+  const pointsRef = useRef();
+  const materialRef = useRef();
+  const animationIdRef = useRef();
+  const startTimeRef = useRef(performance.now());
+  const mouseRef = useRef({ x: 0, y: 0, isDown: false });
+  const rotationRef = useRef({ x: 0, y: 0 });
+  const autoRotationRef = useRef({ x: 0, y: 0 });
+  const cameraDistanceRef = useRef(14);
+  const textureRef = useRef(null);
+
+  // Create shader material
+  const shaderMaterial = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader,
+      fragmentShader,
+      uniforms: {
+        time: { value: 0 },
+        totalParticles: { value: count },
+        currentField: { value: fieldAIndex },
+        nextField: { value: fieldBIndex },
+        morphProgress: { value: morphProgress },
+        globalScale: { value: globalScale },
+        animationSpeed: { value: animationSpeed },
+        particleSize: { value: particleSize },
+        
+        // Texture uniforms
+        useTexture: { value: false },
+        textureMap: { value: null },
+        textureAspect: { value: new THREE.Vector2(1, 1) },
+        textureScale: { value: 1.0 },
+        
+        // Field parameters
+        waveParams1: { value: new THREE.Vector3(1.2, 2, 1.5) },
+        waveParams2: { value: new THREE.Vector3(0.6, 3, 0.8) },
+        waveParams3: { value: new THREE.Vector2(0.3, 2) },
+        dnaParams: { value: new THREE.Vector3(2, 8, 6) },
+        mobiusParams: { value: new THREE.Vector3(4, 1.5, 1) },
+        roseParams: { value: new THREE.Vector3(8, 4, 0.5) },
+        galaxyParams: { value: new THREE.Vector3(4, 2, 1) },
+        chaosParams: { value: new THREE.Vector3(1, 1, 1) },
+        crystalParams: { value: new THREE.Vector3(6, 0.1, 0) }
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+  }, []); // Remove count dependency
+
+  // Initialize scene
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+
+    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    scene.background = new THREE.Color(0x020617);
+    camera.position.set(0, 0, 14);
+
+    sceneRef.current = scene;
+    rendererRef.current = renderer;
+    cameraRef.current = camera;
+    materialRef.current = shaderMaterial;
+
+    sceneRef.current = scene;
+    rendererRef.current = renderer;
+    cameraRef.current = camera;
+    materialRef.current = shaderMaterial;
+
+    // Mouse/touch controls
+    const handleStart = (e) => {
+      mouseRef.current.isDown = true;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      mouseRef.current.x = clientX;
+      mouseRef.current.y = clientY;
+    };
+
+    const handleMove = (e) => {
+      if (!mouseRef.current.isDown) return;
+      e.preventDefault();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const deltaX = clientX - mouseRef.current.x;
+      const deltaY = clientY - mouseRef.current.y;
+      rotationRef.current.y += deltaX * 0.01;
+      rotationRef.current.x += deltaY * 0.01;
+      mouseRef.current.x = clientX;
+      mouseRef.current.y = clientY;
+    };
+
+    const handleEnd = () => {
+      mouseRef.current.isDown = false;
+    };
+
+    // Zoom handlers
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const delta = e.deltaY * 0.01;
+      cameraDistanceRef.current = Math.max(5, Math.min(50, cameraDistanceRef.current + delta));
+      camera.position.z = cameraDistanceRef.current;
+    };
+
+    // Touch zoom
+    let lastTouchDistance = 0;
+    const handleTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        lastTouchDistance = Math.sqrt(
+          Math.pow(touch2.clientX - touch1.clientX, 2) + 
+          Math.pow(touch2.clientY - touch1.clientY, 2)
+        );
+      } else {
+        handleStart(e);
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const currentDistance = Math.sqrt(
+          Math.pow(touch2.clientX - touch1.clientX, 2) + 
+          Math.pow(touch2.clientY - touch1.clientY, 2)
+        );
+        
+        if (lastTouchDistance > 0) {
+          const delta = (lastTouchDistance - currentDistance) * 0.05;
+          cameraDistanceRef.current = Math.max(5, Math.min(50, cameraDistanceRef.current + delta));
+          camera.position.z = cameraDistanceRef.current;
+        }
+        lastTouchDistance = currentDistance;
+      } else {
+        handleMove(e);
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      if (e.touches.length < 2) {
+        lastTouchDistance = 0;
+      }
+      if (e.touches.length === 0) {
+        handleEnd();
+      }
+    };
+
+    canvas.addEventListener('mousedown', handleStart);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseup', handleEnd);
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEnd);
+
+    return () => {
+      canvas.removeEventListener('mousedown', handleStart);
+      canvas.removeEventListener('mousemove', handleMove);
+      canvas.removeEventListener('mouseup', handleEnd);
+      canvas.removeEventListener('wheel', handleWheel);
+      canvas.removeEventListener('touchstart', handleTouchStart);
+      canvas.removeEventListener('touchmove', handleTouchMove);
+      canvas.removeEventListener('touchend', handleTouchEnd);
+      
+      if (animationIdRef.current) {
+        cancelAnimationFrame(animationIdRef.current);
+      }
+      renderer.dispose();
+      shaderMaterial.dispose();
+    };
+  }, [canvasRef, shaderMaterial]);
+
+  // Create/recreate geometry when particle count changes
+  useEffect(() => {
+    if (!sceneRef.current || !materialRef.current) return;
+
+    // Remove old points
+    if (pointsRef.current) {
+      sceneRef.current.remove(pointsRef.current);
+      pointsRef.current.geometry.dispose();
+    }
+
+    // Create new geometry with updated particle count
+    const geometry = new THREE.BufferGeometry();
+    const particleIndices = new Float32Array(count);
+    
+    for (let i = 0; i < count; i++) {
+      particleIndices[i] = i;
+    }
+    
+    geometry.setAttribute('particleIndex', new THREE.BufferAttribute(particleIndices, 1));
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+
+    const points = new THREE.Points(geometry, materialRef.current);
+    sceneRef.current.add(points);
+    pointsRef.current = points;
+
+    // Update uniform
+    materialRef.current.uniforms.totalParticles.value = count;
+  }, [count]);
+
+  // Update uniforms
+  useEffect(() => {
+    if (!materialRef.current) return;
+
+    const uniforms = materialRef.current.uniforms;
+    
+    // Update field selection and morph progress
+    if (journeyMode) {
+      const totalProgress = journeyProgress * FIELD_NAMES.length;
+      const currentIndex = Math.floor(totalProgress) % FIELD_NAMES.length;
+      const nextIndex = (currentIndex + 1) % FIELD_NAMES.length;
+      const localProgress = totalProgress - Math.floor(totalProgress);
+      
+      uniforms.currentField.value = currentIndex;
+      uniforms.nextField.value = nextIndex;
+      uniforms.morphProgress.value = localProgress;
+    } else {
+      uniforms.currentField.value = fieldAIndex;
+      uniforms.nextField.value = fieldBIndex;
+      uniforms.morphProgress.value = morphProgress;
+    }
+
+    uniforms.globalScale.value = globalScale;
+    uniforms.animationSpeed.value = animationSpeed;
+    uniforms.particleSize.value = particleSize;
+    uniforms.totalParticles.value = count;
+
+    // Update wave parameters
+    if (waveParams.waveAmplitude !== undefined) {
+      uniforms.waveParams1.value.set(
+        waveParams.waveAmplitude || 1.2,
+        waveParams.waveFrequency || 2,
+        waveParams.waveSpeed || 1.5
+      );
+      uniforms.waveParams2.value.set(
+        waveParams.secondaryWaveAmp || 0.6,
+        waveParams.secondaryWaveFreq || 3,
+        waveParams.secondaryWaveSpeed || 0.8
+      );
+      uniforms.waveParams3.value.set(
+        waveParams.rippleAmount || 0.3,
+        waveParams.rippleSpeed || 2
+      );
+    }
+  }, [journeyMode, journeyProgress, fieldAIndex, fieldBIndex, morphProgress, globalScale, animationSpeed, particleSize, count, waveParams]);
+
+  // Animation loop
+  useEffect(() => {
+    const animate = () => {
+      if (materialRef.current) {
+        const currentTime = (performance.now() - startTimeRef.current) / 1000;
+        materialRef.current.uniforms.time.value = currentTime;
+      }
+
+      if (pointsRef.current) {
+        let finalRotationX = rotationRef.current.x;
+        let finalRotationY = rotationRef.current.y;
+        
+        if (autoCameraRotation && !mouseRef.current.isDown) {
+          autoRotationRef.current.x += 0.001 * cameraRotationSpeed;
+          autoRotationRef.current.y += 0.003 * cameraRotationSpeed;
+          finalRotationX += autoRotationRef.current.x;
+          finalRotationY += autoRotationRef.current.y;
+        }
+        
+        pointsRef.current.rotation.x = finalRotationX;
+        pointsRef.current.rotation.y = finalRotationY;
+      }
+
+      if (rendererRef.current && sceneRef.current && cameraRef.current) {
+        rendererRef.current.render(sceneRef.current, cameraRef.current);
+      }
+
+      animationIdRef.current = requestAnimationFrame(animate);
+    };
+
+    animationIdRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (animationIdRef.current) {
+        cancelAnimationFrame(animationIdRef.current);
+      }
+    };
+  }, [autoCameraRotation, cameraRotationSpeed]);
+
+  return null;
+}
+
+export default function GPUParticleDemo() {
+  const canvasRef = useRef();
+  const [fieldAIndex, setFieldAIndex] = useState(0);
+  const [fieldBIndex, setFieldBIndex] = useState(6); // DNA
+  const [morphProgress, setMorphProgress] = useState(0.0);
+  const [journeyMode, setJourneyMode] = useState(false);
+  const [journeyProgress, setJourneyProgress] = useState(0.0);
+  const [particleCount, setParticleCount] = useState(100000); // Start with 100k!
+  const [particleSize, setParticleSize] = useState(2.0);
+  const [globalScale, setGlobalScale] = useState(1.0);
+  const [animationSpeed, setAnimationSpeed] = useState(1.0);
+  const [autoMorph, setAutoMorph] = useState(false);
+  const [morphSpeed, setMorphSpeed] = useState(1.0);
+  const [showControls, setShowControls] = useState(false);
+  const [autoCameraRotation, setAutoCameraRotation] = useState(true);
+  const [cameraRotationSpeed, setCameraRotationSpeed] = useState(0.3);
+
+  // Wave parameters
+  const [waveAmplitude, setWaveAmplitude] = useState(1.2);
+  const [waveFrequency, setWaveFrequency] = useState(2);
+  const [waveSpeed, setWaveSpeed] = useState(1.5);
+  const [secondaryWaveAmp, setSecondaryWaveAmp] = useState(0.6);
+  const [secondaryWaveFreq, setSecondaryWaveFreq] = useState(3);
+  const [secondaryWaveSpeed, setSecondaryWaveSpeed] = useState(0.8);
+  const [rippleAmount, setRippleAmount] = useState(0.3);
+  const [rippleSpeed, setRippleSpeed] = useState(2);
+
+  // Auto-morphing
+  useEffect(() => {
+    if (!autoMorph) return;
+    const startTime = performance.now();
+    const animate = () => {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (journeyMode) {
+        const progress = (elapsed * morphSpeed * 0.2) % 1;
+        setJourneyProgress(progress);
+      } else {
+        const progress = (Math.sin(elapsed * morphSpeed) + 1) / 2;
+        setMorphProgress(progress);
+      }
+      if (autoMorph) {
+        requestAnimationFrame(animate);
+      }
+    };
+    const id = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(id);
+  }, [autoMorph, morphSpeed, journeyMode]);
+
+  return (
+    <div className="relative h-screen w-full overflow-hidden bg-gradient-to-b from-slate-900 via-slate-950 to-black touch-none">
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
+        style={{ touchAction: 'none' }}
+      />
+
+      <GPUParticleSystem
+        canvasRef={canvasRef}
+        count={particleCount}
+        journeyMode={journeyMode}
+        journeyProgress={journeyProgress}
+        fieldAIndex={fieldAIndex}
+        fieldBIndex={fieldBIndex}
+        morphProgress={morphProgress}
+        globalScale={globalScale}
+        animationSpeed={animationSpeed}
+        particleSize={particleSize}
+        autoCameraRotation={autoCameraRotation}
+        cameraRotationSpeed={cameraRotationSpeed}
+        waveParams={{
+          waveAmplitude, waveFrequency, waveSpeed,
+          secondaryWaveAmp, secondaryWaveFreq, secondaryWaveSpeed,
+          rippleAmount, rippleSpeed
+        }}
+      />
+
+      {/* Performance indicator */}
+      <div className="absolute top-4 left-4 z-20 bg-green-500/20 backdrop-blur-md rounded-lg px-3 py-2 text-green-300 text-xs font-mono">
+        🚀 GPU: {particleCount.toLocaleString()} particles
+      </div>
+
+      {/* Controls Toggle */}
+      <button
+        onClick={() => setShowControls(!showControls)}
+        className="absolute top-4 right-4 z-20 bg-white/20 backdrop-blur-md rounded-full p-3 text-white/80 hover:bg-white/30 transition-colors"
+      >
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/>
+          <path d="M10 4a6 6 0 100 12 6 6 0 000-12zM2 10a8 8 0 1116 0 8 8 0 01-16 0z"/>
+        </svg>
+      </button>
+
+      {/* Controls Panel */}
+      {showControls && (
+        <div className="absolute top-16 right-4 z-10 bg-white/90 backdrop-blur-md rounded-2xl p-4 w-80 max-w-[calc(100vw-2rem)] shadow-lg">
+          <div className="text-sm font-semibold mb-4 text-green-600">🚀 GPU-Accelerated Particle System</div>
+          
+          <div className="space-y-4 max-h-96 overflow-y-auto">
+            {/* Mode Selection */}
+            <div>
+              <label className="block text-xs font-medium mb-2">Animation Mode</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setJourneyMode(false)}
+                  className={`px-3 py-1 rounded text-xs font-medium ${!journeyMode ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                  A ↔ B Mode
+                </button>
+                <button
+                  onClick={() => setJourneyMode(true)}
+                  className={`px-3 py-1 rounded text-xs font-medium ${journeyMode ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                  Journey Mode
+                </button>
+              </div>
+            </div>
+
+            {!journeyMode ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium mb-2">Field A</label>
+                    <select
+                      value={fieldAIndex}
+                      onChange={e => setFieldAIndex(parseInt(e.target.value))}
+                      className="w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      {FIELD_NAMES.map((name, i) => (
+                        <option key={i} value={i}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-2">Field B</label>
+                    <select
+                      value={fieldBIndex}
+                      onChange={e => setFieldBIndex(parseInt(e.target.value))}
+                      className="w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      {FIELD_NAMES.map((name, i) => (
+                        <option key={i} value={i}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-2">
+                    Morph Progress: {(morphProgress * 100).toFixed(1)}%
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={morphProgress}
+                    onChange={e => setMorphProgress(parseFloat(e.target.value))}
+                    className="w-full"
+                    disabled={autoMorph}
+                  />
+                </div>
+              </>
+            ) : (
+              <div>
+                <label className="block text-xs font-medium mb-2">
+                  Journey Progress: {(journeyProgress * 100).toFixed(1)}%
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.001}
+                  value={journeyProgress}
+                  onChange={e => setJourneyProgress(parseFloat(e.target.value))}
+                  className="w-full"
+                  disabled={autoMorph}
+                />
+              </div>
+            )}
+
+            {/* Auto-Morph */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAutoMorph(!autoMorph)}
+                className={`px-3 py-1 rounded text-xs font-medium ${autoMorph ? 'bg-red-500 text-white' : 'bg-green-500 text-white'}`}
+              >
+                {autoMorph ? 'Stop Auto-Morph' : 'Start Auto-Morph'}
+              </button>
+              {autoMorph && (
+                <div className="flex-1">
+                  <label className="block text-xs mb-1">Speed: {morphSpeed.toFixed(1)}x</label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={3.0}
+                    step={0.1}
+                    value={morphSpeed}
+                    onChange={e => setMorphSpeed(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Auto Camera */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAutoCameraRotation(!autoCameraRotation)}
+                className={`px-3 py-1 rounded text-xs font-medium ${autoCameraRotation ? 'bg-purple-500 text-white' : 'bg-gray-400 text-white'}`}
+              >
+                {autoCameraRotation ? 'Auto Camera ON' : 'Auto Camera OFF'}
+              </button>
+              {autoCameraRotation && (
+                <div className="flex-1">
+                  <label className="block text-xs mb-1">Camera Speed: {cameraRotationSpeed.toFixed(1)}x</label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={2.0}
+                    step={0.1}
+                    value={cameraRotationSpeed}
+                    onChange={e => setCameraRotationSpeed(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Performance Controls */}
+            <div className="border-t pt-3 mt-3">
+              <div className="text-xs font-medium mb-3 text-green-600">⚡ Performance Controls</div>
+              
+              <div>
+                <label className="block text-xs font-medium mb-2">
+                  Particle Count: {particleCount.toLocaleString()}
+                </label>
+                <input
+                  type="range"
+                  min={10000}
+                  max={1000000}
+                  step={10000}
+                  value={particleCount}
+                  onChange={e => setParticleCount(parseInt(e.target.value))}
+                  className="w-full"
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  GPU can handle 1M+ particles smoothly!
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <div>
+                  <label className="block text-xs mb-1">Particle Size: {particleSize.toFixed(3)}px</label>
+                  <input
+                    type="range"
+                    min={0.001}
+                    max={0.5}
+                    step={0.001}
+                    value={particleSize}
+                    onChange={e => setParticleSize(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs mb-1">Animation Speed: {animationSpeed.toFixed(1)}x</label>
+                  <input
+                    type="range"
+                    min={0.0}
+                    max={4.0}
+                    step={0.1}
+                    value={animationSpeed}
+                    onChange={e => setAnimationSpeed(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 gap-2 mt-2">
+                <div>
+                  <label className="block text-xs mb-1">Global Scale: {globalScale.toFixed(1)}x</label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={3.0}
+                    step={0.1}
+                    value={globalScale}
+                    onChange={e => setGlobalScale(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Wave Plane Parameters */}
+            {((journeyMode) || (!journeyMode && (fieldAIndex === 5 || fieldBIndex === 5))) && (
+              <div className="border-t pt-3 mt-3">
+                <div className="text-xs font-medium mb-3 text-blue-600">🌊 Wave Plane Controls</div>
+                
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <label className="block mb-1">Wave Height: {waveAmplitude.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={3.0}
+                      step={0.1}
+                      value={waveAmplitude}
+                      onChange={e => setWaveAmplitude(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Wave Freq: {waveFrequency.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={8.0}
+                      step={0.1}
+                      value={waveFrequency}
+                      onChange={e => setWaveFrequency(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Wave Speed: {waveSpeed.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={4.0}
+                      step={0.1}
+                      value={waveSpeed}
+                      onChange={e => setWaveSpeed(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Cross Waves: {secondaryWaveAmp.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={2.0}
+                      step={0.1}
+                      value={secondaryWaveAmp}
+                      onChange={e => setSecondaryWaveAmp(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Ripples: {rippleAmount.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={1.5}
+                      step={0.1}
+                      value={rippleAmount}
+                      onChange={e => setRippleAmount(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block mb-1">Ripple Speed: {rippleSpeed.toFixed(1)}</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={5.0}
+                      step={0.1}
+                      value={rippleSpeed}
+                      onChange={e => setRippleSpeed(parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Quick Presets */}
+            <div className="border-t pt-3 mt-3">
+              <div className="text-xs font-medium mb-3 text-purple-600">🎯 Quick Presets</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => {
+                    setParticleCount(500000);
+                    setJourneyMode(true);
+                    setAutoMorph(true);
+                    setMorphSpeed(0.5);
+                  }}
+                  className="px-2 py-1 bg-purple-500 text-white rounded text-xs"
+                >
+                  Epic Journey
+                </button>
+                <button
+                  onClick={() => {
+                    setParticleCount(1000000);
+                    setFieldAIndex(6); // DNA
+                    setFieldBIndex(9); // Galaxy
+                    setAutoMorph(true);
+                  }}
+                  className="px-2 py-1 bg-blue-500 text-white rounded text-xs"
+                >
+                  1M Particles
+                </button>
+                <button
+                  onClick={() => {
+                    setFieldAIndex(5); // Wave Plane
+                    setFieldBIndex(11); // Crystal
+                    setWaveAmplitude(2.0);
+                    setRippleAmount(1.0);
+                  }}
+                  className="px-2 py-1 bg-cyan-500 text-white rounded text-xs"
+                >
+                  Ocean Waves
+                </button>
+                <button
+                  onClick={() => {
+                    setFieldAIndex(10); // Chaos
+                    setFieldBIndex(7); // Möbius
+                    setAnimationSpeed(2.0);
+                    setAutoMorph(true);
+                  }}
+                  className="px-2 py-1 bg-red-500 text-white rounded text-xs"
+                >
+                  Chaos Theory
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 text-xs text-gray-600">
+            🚀 GPU-Accelerated • All calculations run on graphics card
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
