@@ -23,6 +23,8 @@ import {
   type CubeLayoutConfig,
 } from '../config/AppConfig';
 import type { CubeContentItem } from '../types/content';
+import { FieldLayoutEngine } from './layouts/FieldLayoutEngine';
+import { GridWaveField } from './layouts/fields/GridWaveField';
 
 export interface CubeSelectionInfo {
   readonly gridX: number;
@@ -106,6 +108,7 @@ export class CubeField {
     columns: [],
   };
   private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
+  private readonly fieldEngine: FieldLayoutEngine;
 
   private getNormalDirection(): number {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
@@ -141,6 +144,7 @@ export class CubeField {
     this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
     this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
     this.useSafeFallbackTextures = this.contentOptions.useFallbackTextures;
+    this.fieldEngine = new FieldLayoutEngine(new GridWaveField());
     this.updateRootTransform();
     this.rebuild(config.gridSize);
   }
@@ -180,6 +184,34 @@ export class CubeField {
 
     const rotation = Quaternion.FromLookDirectionLH(forward, up);
     this.root.rotationQuaternion = rotation;
+  }
+
+  private updateFieldLayout(sceneTime: number, initial: boolean = false): void {
+    if (this.cubes.length === 0) {
+      return;
+    }
+
+    this.fieldEngine.setContext({
+      totalCount: this.cubes.length,
+      gridSize: this.config.gridSize,
+      cubeSize: this.config.cubeSize,
+      cubeSpacing: this.config.cubeSpacing,
+      waveAmplitudeY: this.config.waveAmplitudeY,
+      waveFrequencyY: this.config.waveFrequencyY,
+      wavePhaseSpread: this.config.wavePhaseSpread,
+    });
+
+    const positions = this.fieldEngine.sampleAll(this.cubes.length, sceneTime);
+    for (let index = 0; index < this.cubes.length; index += 1) {
+      const cube = this.cubes[index];
+      const position = positions[index];
+      cube.basePosition.copyFrom(position);
+      if (initial) {
+        cube.currentPosition.copyFrom(position);
+        cube.targetPosition.copyFrom(position);
+        cube.mesh.position.copyFrom(position);
+      }
+    }
   }
 
   public rebuild(gridSize: number): void {
@@ -273,6 +305,7 @@ export class CubeField {
   }
 
     this.applyContentToCubes();
+    this.updateFieldLayout(0, true);
   }
 
   private disposeCubes(): void {
@@ -1102,6 +1135,7 @@ export class CubeField {
       this.updatePhysicsDrivenCubes(deltaTime);
       return;
     }
+    this.updateFieldLayout(sceneTime, false);
     const normalDirection = this.getNormalDirection();
 
     this.cubes.forEach((cube) => {
@@ -1121,15 +1155,10 @@ export class CubeField {
       // Pop out only upwards (Y-axis)
       const selectionOffset = new Vector3(0, normalDirection * this.config.selectedCubeLift * selectionEased, 0);
 
-      const waveOffsetY = this.config.waveAmplitudeY * (
-        Math.sin(cube.basePosition.x * this.config.waveFrequencyY + sceneTime + cube.wavePhase * 0.5)
-        + Math.cos(cube.basePosition.z * this.config.waveFrequencyY + sceneTime * 0.7 + cube.wavePhase * 0.3)
-      );
       const waveRotX = this.config.waveAmplitudeRot * Math.sin(cube.basePosition.z * this.config.waveFrequencyRot + sceneTime * 1.2 + cube.wavePhase);
       const waveRotZ = this.config.waveAmplitudeRot * Math.cos(cube.basePosition.x * this.config.waveFrequencyRot + sceneTime * 1.1 + cube.wavePhase * 0.6);
 
       const intendedPosition = cube.basePosition.clone().add(selectionOffset);
-      intendedPosition.y += waveOffsetY;
 
       const intendedRotation = cube.baseRotation.clone();
       intendedRotation.x += cube.individualXRotAccumulator + waveRotX;
