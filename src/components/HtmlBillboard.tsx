@@ -83,15 +83,6 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
 
   const clampedX = clamp(state.screenX, CLAMP_MARGIN, state.viewportWidth - CLAMP_MARGIN);
   const clampedY = clamp(state.screenY, CLAMP_MARGIN, state.viewportHeight - CLAMP_MARGIN);
-  const lineStartX = clamp(state.cubeScreenX, 0, state.viewportWidth);
-  const lineStartY = clamp(state.cubeScreenY + 30, 0, state.viewportHeight);
-  const lineEndX = clampedX;
-  const lineEndY = clampedY + 24;
-  const connectorValid =
-    Number.isFinite(lineStartX) &&
-    Number.isFinite(lineStartY) &&
-    Number.isFinite(lineEndX) &&
-    Number.isFinite(lineEndY);
 
   return (
     <>
@@ -112,11 +103,6 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
           </motion.div>
         )}
       </AnimatePresence>
-      {state.isVisible && connectorValid && (
-        <svg className="cw-html-billboard__connector" width={state.viewportWidth} height={state.viewportHeight}>
-          <line x1={lineStartX} y1={lineStartY} x2={lineEndX} y2={lineEndY} />
-        </svg>
-      )}
     </>
   );
 }

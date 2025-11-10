@@ -14,6 +14,9 @@ import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
 import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
+import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import type { LinesMesh } from '@babylonjs/core/Meshes/linesMesh';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 
@@ -89,6 +92,7 @@ export class CubeWallPresenter {
   private skipNextPhysicsClick = false;
   private savedHoverInteraction = true;
   private savedAutoSelect = false;
+  private htmlConnectorLine: LinesMesh | null = null;
 
   public async triggerPhysicsDrop(): Promise<void> {
     if (this.physicsActive) {
@@ -463,6 +467,7 @@ export class CubeWallPresenter {
       this.billboardOverlay.deselect(animate);
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
+      this.disposeHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
       return;
@@ -472,6 +477,7 @@ export class CubeWallPresenter {
       this.billboardOverlay.deselect(false);
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
+      this.disposeHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
       return;
@@ -732,6 +738,7 @@ export class CubeWallPresenter {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.disposeHtmlConnectorLine();
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
     this.sceneController.dispose();
@@ -774,6 +781,7 @@ export class CubeWallPresenter {
     if (!this.billboardStateChange) return;
     if (this.config.billboard.mode !== 'html' || !this.currentBillboardCell || !this.currentBillboardInfo) {
       this.billboardStateChange(null);
+      this.disposeHtmlConnectorLine();
       return;
     }
 
@@ -782,6 +790,7 @@ export class CubeWallPresenter {
     const canvas = engine.getRenderingCanvas();
     if (!canvas) {
       this.billboardStateChange(null);
+      this.disposeHtmlConnectorLine();
       return;
     }
 
@@ -834,6 +843,92 @@ export class CubeWallPresenter {
     };
 
     this.billboardStateChange(state);
+    this.updateHtmlConnectorLine(state, cubeAnchor, attachmentWorld, rect);
+  }
+
+  private disposeHtmlConnectorLine(): void {
+    if (this.htmlConnectorLine) {
+      this.htmlConnectorLine.dispose();
+      this.htmlConnectorLine = null;
+    }
+  }
+
+  private updateHtmlConnectorLine(
+    state: BillboardDisplayState,
+    cubeAnchor: Vector3,
+    attachmentWorld: Vector3,
+    canvasRect: DOMRect,
+  ): void {
+    if (this.config.billboard.mode !== 'html') {
+      this.disposeHtmlConnectorLine();
+      return;
+    }
+    if (!state.isVisible) {
+      this.disposeHtmlConnectorLine();
+      return;
+    }
+
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas || canvasRect.width === 0 || canvasRect.height === 0) {
+      this.disposeHtmlConnectorLine();
+      return;
+    }
+
+    const renderWidth = this.engine.getRenderWidth();
+    const renderHeight = this.engine.getRenderHeight();
+    if (renderWidth === 0 || renderHeight === 0) {
+      this.disposeHtmlConnectorLine();
+      return;
+    }
+
+    const CLAMP_MARGIN = 24;
+    const clampedX = Math.min(Math.max(state.screenX, CLAMP_MARGIN), state.viewportWidth - CLAMP_MARGIN);
+    const clampedY = Math.min(Math.max(state.screenY, CLAMP_MARGIN), state.viewportHeight - CLAMP_MARGIN);
+
+    const anchorScreenX = clampedX;
+    const anchorScreenY = clampedY + 24;
+
+    const relativeX = (anchorScreenX - canvasRect.left) / canvasRect.width;
+    const relativeY = (anchorScreenY - canvasRect.top) / canvasRect.height;
+    if (!Number.isFinite(relativeX) || !Number.isFinite(relativeY)) {
+      this.disposeHtmlConnectorLine();
+      return;
+    }
+
+    const normalizedX = Math.min(Math.max(relativeX, 0), 1);
+    const normalizedY = Math.min(Math.max(relativeY, 0), 1);
+
+    const pointerX = normalizedX * renderWidth;
+    const pointerY = normalizedY * renderHeight;
+
+    const camera = this.sceneController.getCamera();
+    const ray = this.scene.createPickingRay(pointerX, pointerY, Matrix.Identity(), camera, false);
+
+    const forward = camera.target.subtract(camera.position);
+    if (forward.lengthSquared() < 1e-6) {
+      forward.set(0, 0, 1);
+    }
+    forward.normalize();
+
+    const plane = Plane.FromPositionAndNormal(attachmentWorld, forward);
+    const hitDistance = ray.intersectsPlane(plane);
+    const endPoint = hitDistance !== null && Number.isFinite(hitDistance)
+      ? ray.origin.add(ray.direction.scale(hitDistance))
+      : attachmentWorld.clone();
+
+    const points = [cubeAnchor, endPoint];
+    if (this.htmlConnectorLine) {
+      this.htmlConnectorLine = MeshBuilder.CreateLines(
+        this.htmlConnectorLine.name,
+        { points, instance: this.htmlConnectorLine },
+        this.scene,
+      );
+    } else {
+      this.htmlConnectorLine = MeshBuilder.CreateLines('htmlBillboardConnector', { points }, this.scene);
+      this.htmlConnectorLine.color = new Color3(0.8, 0.8, 0.9);
+      this.htmlConnectorLine.alpha = 0.85;
+      this.htmlConnectorLine.isPickable = false;
+    }
   }
 
   private getAxisLabelAxes(): AxisLabelAxis[] {
