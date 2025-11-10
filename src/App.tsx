@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CanvasStage } from './components/CanvasStage';
 import { SelectionOverlay } from './components/SelectionOverlay';
 import { DebugOverlay } from './components/DebugOverlay';
@@ -141,6 +141,8 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.waveSpeed = settings.waveSpeed;
   appConfig.waveAmplitudeY = settings.waveAmplitudeY;
   appConfig.waveAmplitudeRot = settings.waveAmplitudeRot;
+  appConfig.fieldAnimationSpeed = settings.fieldAnimationSpeed;
+  appConfig.fieldGlobalScale = settings.fieldGlobalScale;
   appConfig.interactionRadius = settings.interactionRadius;
   appConfig.interactionLift = settings.interactionLift;
   appConfig.selectedCubeRotation = settings.selectedCubeRotation;
@@ -178,6 +180,9 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.billboard.heightOffset = settings.billboardHeightOffset;
   appConfig.billboard.distance = settings.billboardDistance;
   appConfig.billboard.angleDegrees = settings.billboardAngleDegrees;
+  appConfig.billboard.connectorMode = settings.billboardConnectorMode;
+  appConfig.billboard.connectorThicknessPx = settings.billboardConnectorThicknessPx;
+  appConfig.billboard.connectorFeatherPx = settings.billboardConnectorFeatherPx;
   appConfig.slowAutorotateEnabled = settings.slowAutorotateEnabled;
   appConfig.slowAutorotateSpeed = settings.slowAutorotateSpeed;
   appConfig.selectionCameraFollowEnabled = settings.selectionCameraFollowEnabled;
@@ -221,6 +226,10 @@ export default function App() {
   const refreshControllerRef = useRef<AbortController | null>(null);
   const layoutOverrideRef = useRef<Partial<CubeLayoutConfig> | null>(null);
   const [layoutOverride, setLayoutOverride] = useState<Partial<CubeLayoutConfig> | null>(null);
+  const [contentStats, setContentStats] = useState<{ itemCount: number; lastRefreshIso: string | null }>({
+    itemCount: 0,
+    lastRefreshIso: null,
+  });
   const axisLabelStateRef = useRef<{
     enabled: boolean;
     mode: AxisLabelsMode;
@@ -231,6 +240,28 @@ export default function App() {
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
   appConfig.useFallbackImages = enableBaseFallbackTextures;
+
+  const apiBaseUrl = useMemo(() => {
+    const explicit = (import.meta.env.VITE_KORALMBAHN_API_URL as string | undefined)?.trim();
+    if (explicit) {
+      return explicit.replace(/\/$/, '');
+    }
+    if (import.meta.env.DEV) {
+      return 'http://localhost:8080';
+    }
+    if (typeof window !== 'undefined' && window.location) {
+      return window.location.origin.replace(/\/$/, '');
+    }
+    return '';
+  }, []);
+
+  const storageBaseUrl = useMemo(() => {
+    const explicit = (import.meta.env.VITE_KORALMBAHN_STORAGE_URL as string | undefined)?.trim();
+    if (explicit) {
+      return explicit.replace(/\/+$/, '');
+    }
+    return 'https://api-storage.arkturian.com';
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -282,6 +313,10 @@ export default function App() {
       }
       contentItemsRef.current = payload.items;
       contentLayoutRef.current = payload.layout ?? null;
+      setContentStats({
+        itemCount: payload.items.length,
+        lastRefreshIso: new Date().toISOString(),
+      });
       if (presenterRef.current) {
         applyContentToPresenter(payload.items, payload.layout ?? undefined);
       }
@@ -375,6 +410,18 @@ export default function App() {
     }
   }, [layoutOverride, applyContentToPresenter]);
 
+  const panelMeta = useMemo(
+    () => ({
+      providerId: contentProviderId,
+      apiBaseUrl,
+      storageBaseUrl,
+      environment: import.meta.env.MODE ?? 'unknown',
+      lastRefreshIso: contentStats.lastRefreshIso,
+      itemCount: contentStats.itemCount,
+    }),
+    [apiBaseUrl, contentProviderId, contentStats.itemCount, contentStats.lastRefreshIso, storageBaseUrl],
+  );
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'F1') {
@@ -462,13 +509,21 @@ export default function App() {
           presenterRef.current.debugAxisSummary();
         }
       }
+      if (event.key === 'F6') {
+        event.preventDefault();
+        presenterRef.current?.randomizeFieldOrientation();
+      }
+      if (event.key === 'F7') {
+        event.preventDefault();
+        presenterRef.current?.startFieldMorph();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   if (!settings) {
-    return (
+  return (
       <div className="cw-root">
         <div className="cw-loading">
           <p>Loading presenter settings…</p>
@@ -503,6 +558,7 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         position={panelPosition}
         onPositionChange={setPanelPosition}
+        meta={panelMeta}
       />
       {settings.showDebugOverlay && (
         <DebugOverlay lines={debugLines} />

@@ -2,7 +2,8 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { FieldContext, FieldDefinition } from '../FieldLayoutEngine';
 
 export class GridWaveField implements FieldDefinition {
-  public readonly name = 'grid-wave';
+  public readonly id = 'grid';
+  public readonly name = 'Wave Grid';
 
   public sample(index: number, time: number, context: FieldContext, target: Vector3): Vector3 {
     const { gridSize, cubeSize, cubeSpacing, waveAmplitudeY, waveFrequencyY, wavePhaseSpread } = context;
@@ -27,7 +28,8 @@ export class GridWaveField implements FieldDefinition {
       );
     }
 
-    return target.set(x, y, z);
+    const scale = context.globalScale ?? 1;
+    return target.set(x * scale, y * scale, z * scale);
   }
 }
 

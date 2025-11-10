@@ -2,6 +2,15 @@ import type { ChangeEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { PresenterSettings } from '../config/PresenterSettings';
 
+interface SettingsPanelMeta {
+  providerId: string;
+  apiBaseUrl: string;
+  storageBaseUrl: string;
+  environment: string;
+  lastRefreshIso: string | null;
+  itemCount: number;
+}
+
 export interface SettingsPanelProps {
   isOpen: boolean;
   settings: PresenterSettings;
@@ -9,6 +18,7 @@ export interface SettingsPanelProps {
   onClose: () => void;
   position: { x: number; y: number };
   onPositionChange: (pos: { x: number; y: number }) => void;
+  meta?: SettingsPanelMeta;
 }
 
 interface SliderSpec {
@@ -26,6 +36,8 @@ const SLIDERS: SliderSpec[] = [
   { key: 'waveSpeed', label: 'Wave Speed', min: 0, max: 1, step: 0.02, formatter: (v) => v.toFixed(2) },
   { key: 'waveAmplitudeY', label: 'Wave Height', min: 0, max: 0.6, step: 0.02, formatter: (v) => v.toFixed(2) },
   { key: 'waveAmplitudeRot', label: 'Wave Tilt', min: 0, max: 0.4, step: 0.01, formatter: (v) => v.toFixed(2) },
+  { key: 'fieldAnimationSpeed', label: 'Field Animation Speed', min: 0, max: 3, step: 0.05, formatter: (v) => v.toFixed(2) },
+  { key: 'fieldGlobalScale', label: 'Field Spread', min: 0.4, max: 3, step: 0.05, formatter: (v) => v.toFixed(2) },
   { key: 'autoSelectInterval', label: 'Auto Select Interval', min: 1, max: 30, step: 0.5, formatter: (v) => `${v.toFixed(1)}s`, isEnabled: (s) => s.autoSelectEnabled },
   { key: 'slowAutorotateSpeed', label: 'Slow Autorotate Speed', min: 0, max: 1, step: 0.01, formatter: (v) => v.toFixed(2), isEnabled: (s) => s.slowAutorotateEnabled },
   { key: 'depthOfFieldFocusDistance', label: 'DoF Focus Distance', min: 10, max: 500, step: 5, formatter: (v) => `${Math.round(v)}`, isEnabled: (s) => s.depthOfFieldEnabled && !s.depthOfFieldAutoFocusEnabled },
@@ -59,12 +71,41 @@ const SLIDERS: SliderSpec[] = [
   { key: 'billboardHeightOffset', label: 'Billboard Height', min: 0, max: 5, step: 0.05, formatter: (v) => v.toFixed(2) },
   { key: 'billboardDistance', label: 'Billboard Distance', min: 0, max: 5, step: 0.05, formatter: (v) => v.toFixed(2) },
   { key: 'billboardAngleDegrees', label: 'Billboard Angle°', min: -180, max: 180, step: 1, formatter: (v) => `${Math.round(v)}°` },
+  {
+    key: 'billboardConnectorThicknessPx',
+    label: 'Connector Thickness (px)',
+    min: 1,
+    max: 20,
+    step: 0.5,
+    formatter: (v) => v.toFixed(1),
+    isEnabled: (s) => s.billboardMode === 'html' && s.billboardConnectorMode !== 'htmlSvg',
+  },
+  {
+    key: 'billboardConnectorFeatherPx',
+    label: 'Connector Feather (px)',
+    min: 0,
+    max: 6,
+    step: 0.1,
+    formatter: (v) => v.toFixed(1),
+    isEnabled: (s) => s.billboardMode === 'html' && s.billboardConnectorMode === 'screenSpace',
+  },
   { key: 'axisLabelsOffsetX', label: 'Axis Offset X', min: -5, max: 5, step: 0.05, formatter: (v) => v.toFixed(2), isEnabled: (s) => s.axisLabelsEnabled },
   { key: 'axisLabelsOffsetY', label: 'Axis Offset Y', min: -5, max: 5, step: 0.05, formatter: (v) => v.toFixed(2), isEnabled: (s) => s.axisLabelsEnabled },
   { key: 'axisLabelsOffsetZ', label: 'Axis Offset Z', min: -5, max: 5, step: 0.05, formatter: (v) => v.toFixed(2), isEnabled: (s) => s.axisLabelsEnabled },
 ];
 
-export function SettingsPanel({ isOpen, settings, onChange, onClose, position, onPositionChange }: SettingsPanelProps) {
+function formatTimestamp(iso?: string | null): string {
+  if (!iso) {
+    return '–';
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  return `${date.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+}
+
+export function SettingsPanel({ isOpen, settings, onChange, onClose, position, onPositionChange, meta }: SettingsPanelProps) {
   const handleInput = (spec: SliderSpec) => (event: ChangeEvent<HTMLInputElement>) => {
     const value = Number.parseFloat(event.target.value);
     onChange({ [spec.key]: value } as Partial<PresenterSettings>);
@@ -113,6 +154,34 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
               </div>
               <button type="button" onMouseDown={(event) => event.stopPropagation()} onClick={onClose}>Close</button>
             </header>
+            {meta && (
+              <section className="cw-settings__meta">
+                <div>
+                  <span>API Endpoint</span>
+                  <strong>{meta.apiBaseUrl}</strong>
+                </div>
+                <div>
+                  <span>Storage</span>
+                  <strong>{meta.storageBaseUrl}</strong>
+                </div>
+                <div>
+                  <span>Provider</span>
+                  <strong>{meta.providerId}</strong>
+                </div>
+                <div>
+                  <span>Environment</span>
+                  <strong>{meta.environment}</strong>
+                </div>
+                <div>
+                  <span>Items Loaded</span>
+                  <strong>{meta.itemCount}</strong>
+                </div>
+                <div>
+                  <span>Last Refresh</span>
+                  <strong>{formatTimestamp(meta.lastRefreshIso)}</strong>
+                </div>
+              </section>
+            )}
             <div className="cw-settings__toggles">
               <label className="cw-settings__toggle">
                 <input
@@ -245,6 +314,18 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
                 >
                   <option value="3d">3D Panel</option>
                   <option value="html">HTML Overlay</option>
+                </select>
+              </label>
+              <label className="cw-settings__toggle" data-disabled={settings.billboardMode !== 'html'}>
+                <span>Connector Rendering</span>
+                <select
+                  value={settings.billboardConnectorMode}
+                  onChange={(event) => onChange({ billboardConnectorMode: event.target.value as PresenterSettings['billboardConnectorMode'] })}
+                  disabled={settings.billboardMode !== 'html'}
+                >
+                  <option value="htmlSvg">Screen Overlay (SVG)</option>
+                  <option value="tube3d">3D Tube</option>
+                  <option value="screenSpace">Screen-Space Beam</option>
                 </select>
               </label>
               <label className="cw-settings__toggle">

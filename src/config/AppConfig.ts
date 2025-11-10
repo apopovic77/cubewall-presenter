@@ -5,6 +5,7 @@ export type DepthOfFieldBlurLevel = 'low' | 'medium' | 'high';
 export const DOF_FOCUS_MIN = 5;
 export const DOF_WORLD_TO_MM = 1000;
 export type BillboardMode = '3d' | 'html';
+export type BillboardConnectorMode = 'htmlSvg' | 'tube3d' | 'screenSpace';
 export type AxisLabelsMode = 'overlay' | '3d';
 export type AxisLabelAxis = 'rows' | 'columns';
 export type TextureSidePattern = 'uniform' | 'alternating';
@@ -40,6 +41,8 @@ export interface CubeWallConfig {
   waveFrequencyRot: number;
   waveSpeed: number;
   wavePhaseSpread: number;
+  fieldAnimationSpeed: number;
+  fieldGlobalScale: number;
   individualXRotSpeed: number;
   interactionRadius: number;
   interactionLift: number;
@@ -95,6 +98,9 @@ export interface CubeWallConfig {
     angleDegrees: number;
     mode: BillboardMode;
     htmlContent: string;
+    connectorMode: BillboardConnectorMode;
+    connectorThicknessPx: number;
+    connectorFeatherPx: number;
   };
   axisLabels: {
     enabled: boolean;
@@ -132,6 +138,8 @@ export const appConfig: CubeWallConfig = {
   waveFrequencyRot: 0.25,
   waveSpeed: 0.4,
   wavePhaseSpread: 0.05,
+  fieldAnimationSpeed: 1,
+  fieldGlobalScale: 1,
   individualXRotSpeed: 0.2,
   interactionRadius: 4,
   interactionLift: 1.2,
@@ -196,6 +204,9 @@ export const appConfig: CubeWallConfig = {
     mode: 'html',
     htmlContent:
       '<div class="cw-html-billboard__meta"><span>{{source}}</span><span>{{publishedAt}}</span><span>{{category}}</span></div><h2>{{title}}</h2><p>{{summary}}</p><a class="cw-html-billboard__link" href="{{url}}" target="_blank" rel="noreferrer">Zum Artikel</a>',
+    connectorMode: 'screenSpace',
+    connectorThicknessPx: 5,
+    connectorFeatherPx: 1.2,
   },
   axisLabels: {
     enabled: true,

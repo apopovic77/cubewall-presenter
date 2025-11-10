@@ -25,6 +25,10 @@ import {
 import type { CubeContentItem } from '../types/content';
 import { FieldLayoutEngine } from './layouts/FieldLayoutEngine';
 import { GridWaveField } from './layouts/fields/GridWaveField';
+import { SpiralField } from './layouts/fields/SpiralField';
+import { SphereField } from './layouts/fields/SphereField';
+import { HelixField } from './layouts/fields/HelixField';
+import { ChaosField } from './layouts/fields/ChaosField';
 
 export interface CubeSelectionInfo {
   readonly gridX: number;
@@ -109,6 +113,8 @@ export class CubeField {
   };
   private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
   private readonly fieldEngine: FieldLayoutEngine;
+  private fieldTime = 0;
+  private readonly fieldMorphDurationSeconds = 6;
 
   private getNormalDirection(): number {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
@@ -144,7 +150,14 @@ export class CubeField {
     this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
     this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
     this.useSafeFallbackTextures = this.contentOptions.useFallbackTextures;
-    this.fieldEngine = new FieldLayoutEngine(new GridWaveField());
+    this.fieldEngine = new FieldLayoutEngine([
+      new GridWaveField(),
+      new SpiralField(),
+      new SphereField(),
+      new HelixField(),
+      new ChaosField(),
+    ]);
+    this.fieldTime = 0;
     this.updateRootTransform();
     this.rebuild(config.gridSize);
   }
@@ -186,9 +199,41 @@ export class CubeField {
     this.root.rotationQuaternion = rotation;
   }
 
-  private updateFieldLayout(sceneTime: number, initial: boolean = false): void {
+  public randomizeFieldOrientation(): void {
+    const yaw = Scalar.RandomRange(0, Math.PI * 2);
+    const pitch = Scalar.RandomRange(-Math.PI / 2, Math.PI / 2);
+    const roll = Scalar.RandomRange(-Math.PI / 2, Math.PI / 2);
+    const rotation = Quaternion.RotationYawPitchRoll(yaw, pitch, roll);
+    this.root.rotationQuaternion = rotation;
+  }
+
+  public startFieldMorph(): { current: string; next: string } | null {
+    if (this.fieldEngine.isMorphing()) {
+      return null;
+    }
+    const total = this.fieldEngine.getFieldCount();
+    if (total <= 1) {
+      return null;
+    }
+    const currentIndex = this.fieldEngine.getCurrentFieldIndex();
+    const nextIndex = (currentIndex + 1) % total;
+    this.fieldEngine.startMorphTo(nextIndex, this.fieldMorphDurationSeconds);
+    const current = this.fieldEngine.getCurrentField().name;
+    const next = this.fieldEngine.getNextField().name;
+    return { current, next };
+  }
+
+  private updateFieldLayout(deltaTime: number, initial: boolean = false): void {
+    this.fieldEngine.update(deltaTime);
     if (this.cubes.length === 0) {
       return;
+    }
+
+    if (initial) {
+      this.fieldTime = 0;
+    } else if (deltaTime > 0) {
+      const speed = Math.max(0, this.config.fieldAnimationSpeed);
+      this.fieldTime += deltaTime * speed;
     }
 
     this.fieldEngine.setContext({
@@ -199,9 +244,11 @@ export class CubeField {
       waveAmplitudeY: this.config.waveAmplitudeY,
       waveFrequencyY: this.config.waveFrequencyY,
       wavePhaseSpread: this.config.wavePhaseSpread,
+      globalScale: this.config.fieldGlobalScale,
     });
 
-    const positions = this.fieldEngine.sampleAll(this.cubes.length, sceneTime);
+    const effectiveTime = initial ? 0 : this.fieldTime;
+    const positions = this.fieldEngine.sampleAll(this.cubes.length, effectiveTime);
     for (let index = 0; index < this.cubes.length; index += 1) {
       const cube = this.cubes[index];
       const position = positions[index];
@@ -1135,7 +1182,7 @@ export class CubeField {
       this.updatePhysicsDrivenCubes(deltaTime);
       return;
     }
-    this.updateFieldLayout(sceneTime, false);
+    this.updateFieldLayout(deltaTime);
     const normalDirection = this.getNormalDirection();
 
     this.cubes.forEach((cube) => {

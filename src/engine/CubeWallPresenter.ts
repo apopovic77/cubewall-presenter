@@ -2,6 +2,7 @@ import { PointerEventTypes, PointerInfo } from '@babylonjs/core/Events/pointerEv
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import '@babylonjs/core/Culling/ray';
+import type { Camera } from '@babylonjs/core/Cameras/camera';
 import { SceneController } from './SceneController';
 import { CubeField } from './CubeField';
 import type { CubeSelectionInfo } from './CubeField';
@@ -15,13 +16,75 @@ import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
-import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
+import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
+import { Material } from '@babylonjs/core/Materials/material';
+import { Effect } from '@babylonjs/core/Materials/effect';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CONNECTOR_SHADER_NAME = 'htmlConnectorLine';
+let connectorShaderRegistered = false;
+
+function ensureConnectorShader(): void {
+  if (connectorShaderRegistered) return;
+  Effect.ShadersStore[`${CONNECTOR_SHADER_NAME}VertexShader`] = `
+    precision highp float;
+
+    attribute vec3 position;
+
+    uniform vec3 start;
+    uniform vec3 end;
+    uniform float radius;
+    uniform mat4 view;
+    uniform mat4 projection;
+    uniform vec3 cameraPosition;
+
+    varying float vEdge;
+
+    void main(void) {
+      vec3 line = end - start;
+      float lengthLine = max(length(line), 1e-6);
+      vec3 forward = line / lengthLine;
+
+      vec3 lineCenter = start + line * 0.5;
+      vec3 cameraVector = normalize(cameraPosition - lineCenter);
+      vec3 right = normalize(cross(cameraVector, forward));
+      if (length(right) < 1e-4) {
+        right = normalize(abs(forward.y) < 0.999 ? cross(vec3(0.0, 1.0, 0.0), forward) : cross(vec3(1.0, 0.0, 0.0), forward));
+      }
+      vec3 up = normalize(cross(forward, right));
+
+      float offset = position.x;
+      float along = position.y;
+      vec3 worldPos = start + forward * along * lengthLine + right * offset * radius;
+
+      gl_Position = projection * view * vec4(worldPos, 1.0);
+      vEdge = abs(offset);
+    }
+  `;
+
+  Effect.ShadersStore[`${CONNECTOR_SHADER_NAME}FragmentShader`] = `
+    precision highp float;
+
+    uniform vec3 color;
+    uniform float feather;
+
+    varying float vEdge;
+
+    void main(void) {
+      float edge = smoothstep(1.0 - feather, 1.0, vEdge);
+      float alpha = 1.0 - edge;
+      if (alpha <= 0.004) {
+        discard;
+      }
+      gl_FragColor = vec4(color, alpha);
+    }
+  `;
+  connectorShaderRegistered = true;
+}
 
 export interface BillboardDisplayState {
   worldPosition: Vector3;
@@ -93,8 +156,9 @@ export class CubeWallPresenter {
   private skipNextPhysicsClick = false;
   private savedHoverInteraction = true;
   private savedAutoSelect = false;
-  private htmlConnectorTube: Mesh | null = null;
-  private htmlConnectorMaterial: StandardMaterial | null = null;
+  private htmlConnectorMesh: Mesh | null = null;
+  private htmlConnectorMaterial: ShaderMaterial | null = null;
+  private readonly htmlConnectorColor = new Color3(0.3, 0.7, 1.0);
 
   public async triggerPhysicsDrop(): Promise<void> {
     if (this.physicsActive) {
@@ -469,7 +533,7 @@ export class CubeWallPresenter {
       this.billboardOverlay.deselect(animate);
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
       return;
@@ -479,7 +543,7 @@ export class CubeWallPresenter {
       this.billboardOverlay.deselect(false);
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
       return;
@@ -572,6 +636,20 @@ export class CubeWallPresenter {
     }
   }
 
+  public randomizeFieldOrientation(): void {
+    this.cubeField.randomizeFieldOrientation();
+    this.logDebug('[Field] Randomized orientation');
+  }
+
+  public startFieldMorph(): void {
+    const result = this.cubeField.startFieldMorph();
+    if (!result) {
+      this.logDebug('[Field] Morph request ignored (already morphing or no alternate field)');
+      return;
+    }
+    this.logDebug(`[Field] Morphing ${result.current} → ${result.next}`);
+  }
+
   public start(): void {
     this.engine.runRenderLoop(() => {
       if (this.disposed) return;
@@ -655,6 +733,8 @@ export class CubeWallPresenter {
     this.config.waveSpeed = settings.waveSpeed;
     this.config.waveAmplitudeY = settings.waveAmplitudeY;
     this.config.waveAmplitudeRot = settings.waveAmplitudeRot;
+    this.config.fieldAnimationSpeed = settings.fieldAnimationSpeed;
+    this.config.fieldGlobalScale = settings.fieldGlobalScale;
     this.hoverInteractionEnabled = settings.enableHoverInteraction;
     this.autoSelectEnabled = settings.autoSelectEnabled;
     this.autoSelectInterval = Math.max(1, settings.autoSelectInterval);
@@ -708,6 +788,9 @@ export class CubeWallPresenter {
     this.config.textureMirrorTopBottom = mirrorTopBottom;
     this.config.billboard.mode = settings.billboardMode;
     this.config.billboard.htmlContent = settings.billboardHtmlContent;
+    this.config.billboard.connectorMode = settings.billboardConnectorMode;
+    this.config.billboard.connectorThicknessPx = settings.billboardConnectorThicknessPx;
+    this.config.billboard.connectorFeatherPx = settings.billboardConnectorFeatherPx;
     this.config.axisLabels.enabled = settings.axisLabelsEnabled;
     this.config.axisLabels.startDateIso = settings.axisLabelsStartDate;
     this.config.axisLabels.stepDays = Math.max(1, settings.axisLabelsStepDays);
@@ -740,7 +823,7 @@ export class CubeWallPresenter {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.disposeHtmlConnectorLine();
+    this.disposeHtmlConnectorResources();
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
     this.sceneController.dispose();
@@ -783,7 +866,7 @@ export class CubeWallPresenter {
     if (!this.billboardStateChange) return;
     if (this.config.billboard.mode !== 'html' || !this.currentBillboardCell || !this.currentBillboardInfo) {
       this.billboardStateChange(null);
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
 
@@ -792,7 +875,7 @@ export class CubeWallPresenter {
     const canvas = engine.getRenderingCanvas();
     if (!canvas) {
       this.billboardStateChange(null);
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
 
@@ -846,14 +929,86 @@ export class CubeWallPresenter {
     this.updateHtmlConnectorLine(state, cubeAnchor, attachmentWorld, rect);
   }
 
-  private disposeHtmlConnectorLine(): void {
-    if (this.htmlConnectorTube) {
-      this.htmlConnectorTube.dispose();
-      this.htmlConnectorTube = null;
+  private hideHtmlConnectorLine(): void {
+    if (this.htmlConnectorMesh) {
+      this.htmlConnectorMesh.isVisible = false;
     }
+  }
+
+  private disposeHtmlConnectorResources(): void {
+    this.htmlConnectorMesh?.dispose();
+    this.htmlConnectorMesh = null;
+    this.htmlConnectorMaterial?.dispose();
+    this.htmlConnectorMaterial = null;
+  }
+
+  private ensureHtmlConnectorMesh(): Mesh {
+    if (this.htmlConnectorMesh && this.htmlConnectorMaterial) {
+      return this.htmlConnectorMesh;
+    }
+
+    ensureConnectorShader();
+
+    const mesh = new Mesh('htmlBillboardConnector', this.scene);
+    const vertexData = new VertexData();
+    vertexData.positions = [
+      -1, 0, 0,
+      -1, 1, 0,
+      1, 0, 0,
+      1, 1, 0,
+    ];
+    vertexData.indices = [0, 1, 2, 2, 1, 3];
+    vertexData.applyToMesh(mesh, true);
+
+    this.htmlConnectorMaterial = new ShaderMaterial(
+      'htmlBillboardConnectorMaterial',
+      this.scene,
+      CONNECTOR_SHADER_NAME,
+      {
+        attributes: ['position'],
+        uniforms: ['world', 'view', 'projection', 'start', 'end', 'radius', 'feather', 'color', 'cameraPosition'],
+      },
+    );
+    this.htmlConnectorMaterial.backFaceCulling = false;
+    this.htmlConnectorMaterial.alphaMode = Engine.ALPHA_COMBINE;
+    this.htmlConnectorMaterial.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.htmlConnectorMaterial.disableDepthWrite = false;
+    this.htmlConnectorMaterial.forceDepthWrite = false;
+    this.htmlConnectorMaterial.needDepthPrePass = false;
+    this.htmlConnectorMaterial.separateCullingPass = false;
+    this.htmlConnectorMaterial.setColor3('color', this.htmlConnectorColor);
+    this.htmlConnectorMaterial.setFloat('feather', 0.2);
+
+    mesh.material = this.htmlConnectorMaterial;
+    mesh.isPickable = false;
+    mesh.doNotSyncBoundingInfo = true;
+    mesh.alwaysSelectAsActiveMesh = true;
+    mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
+    mesh.isVisible = false;
+
+    this.htmlConnectorMesh = mesh;
+    return mesh;
+  }
+
+  private renderScreenSpaceConnector(
+    startPoint: Vector3,
+    endPoint: Vector3,
+    radiusWorld: number,
+    featherRatio: number,
+    camera: Camera,
+  ): void {
+    const mesh = this.ensureHtmlConnectorMesh();
+    mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? mesh.renderingGroupId;
+    mesh.setEnabled(true);
+    mesh.isVisible = true;
+
     if (this.htmlConnectorMaterial) {
-      this.htmlConnectorMaterial.dispose();
-      this.htmlConnectorMaterial = null;
+      this.htmlConnectorMaterial.setVector3('start', startPoint.clone());
+      this.htmlConnectorMaterial.setVector3('end', endPoint.clone());
+      this.htmlConnectorMaterial.setFloat('radius', Math.max(0.0005, radiusWorld));
+      this.htmlConnectorMaterial.setFloat('feather', featherRatio);
+      this.htmlConnectorMaterial.setColor3('color', this.htmlConnectorColor);
+      this.htmlConnectorMaterial.setVector3('cameraPosition', camera.position.clone());
     }
   }
 
@@ -864,24 +1019,29 @@ export class CubeWallPresenter {
     canvasRect: DOMRect,
   ): void {
     if (this.config.billboard.mode !== 'html') {
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
     if (!state.isVisible) {
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
+      return;
+    }
+
+    if (this.config.billboard.connectorMode === 'htmlSvg') {
+      this.hideHtmlConnectorLine();
       return;
     }
 
     const canvas = this.engine.getRenderingCanvas();
     if (!canvas || canvasRect.width === 0 || canvasRect.height === 0) {
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
 
     const renderWidth = this.engine.getRenderWidth();
     const renderHeight = this.engine.getRenderHeight();
     if (renderWidth === 0 || renderHeight === 0) {
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
 
@@ -895,7 +1055,7 @@ export class CubeWallPresenter {
     const relativeX = (anchorScreenX - canvasRect.left) / canvasRect.width;
     const relativeY = (anchorScreenY - canvasRect.top) / canvasRect.height;
     if (!Number.isFinite(relativeX) || !Number.isFinite(relativeY)) {
-      this.disposeHtmlConnectorLine();
+      this.hideHtmlConnectorLine();
       return;
     }
 
@@ -927,44 +1087,35 @@ export class CubeWallPresenter {
       endPoint.subtractInPlace(direction.scale(0.02 * this.config.cubeSize));
     }
 
-    const path = [startPoint, endPoint];
-    const radius = Math.max(0.002, 0.01 * this.config.cubeSize);
+    const connectorLength = Vector3.Distance(startPoint, endPoint);
+    if (!Number.isFinite(connectorLength) || connectorLength <= 1e-4) {
+      this.hideHtmlConnectorLine();
+      return;
+    }
 
-    if (this.htmlConnectorTube) {
-      MeshBuilder.CreateTube(
-        this.htmlConnectorTube.name,
-        {
-          path,
-          radius,
-          instance: this.htmlConnectorTube,
-        },
-        this.scene,
-      );
-    } else {
-      this.htmlConnectorTube = MeshBuilder.CreateTube(
-        'htmlBillboardConnector',
-        {
-          path,
-          radius,
-          updatable: true,
-          cap: Mesh.CAP_END,
-        },
-        this.scene,
-      );
-      this.htmlConnectorMaterial = new StandardMaterial('htmlBillboardConnectorMat', this.scene);
-      this.htmlConnectorMaterial.diffuseColor = new Color3(0.3, 0.7, 1.0);
-      this.htmlConnectorMaterial.emissiveColor = new Color3(0.25, 0.6, 0.95);
-      this.htmlConnectorMaterial.specularColor = Color3.Black();
-      this.htmlConnectorMaterial.alpha = 1;
-      this.htmlConnectorMaterial.alphaMode = Engine.ALPHA_DISABLE;
-      this.htmlConnectorMaterial.backFaceCulling = false;
-      this.htmlConnectorMaterial.disableDepthWrite = false;
-      this.htmlConnectorMaterial.forceDepthWrite = true;
-      this.htmlConnectorTube.material = this.htmlConnectorMaterial;
-      this.htmlConnectorTube.isPickable = false;
-      this.htmlConnectorTube.alwaysSelectAsActiveMesh = false;
-      this.htmlConnectorTube.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
-      this.htmlConnectorTube.doNotSyncBoundingInfo = true;
+    const midPoint = startPoint.add(endPoint).scale(0.5);
+    const cameraForward = camera.getForwardRay().direction;
+    let depth = Vector3.Dot(midPoint.subtract(camera.position), cameraForward);
+    if (!Number.isFinite(depth) || depth <= 0) {
+      depth = midPoint.subtract(camera.position).length();
+    }
+
+    const thicknessPx = Math.max(0.5, this.config.billboard.connectorThicknessPx);
+    const featherPx = Math.max(0, this.config.billboard.connectorFeatherPx);
+    const viewportHeight = Math.max(1, renderHeight);
+    const worldHeight = 2 * depth * Math.tan(camera.fov / 2);
+    const diameterWorld = (thicknessPx / viewportHeight) * worldHeight;
+    const radiusWorld = Math.max(0.0005, diameterWorld * 0.5);
+    const featherRatio = Math.min(0.49, featherPx / Math.max(thicknessPx, 0.0001));
+
+    switch (this.config.billboard.connectorMode) {
+      case 'tube3d':
+      case 'screenSpace':
+        this.renderScreenSpaceConnector(startPoint, endPoint, radiusWorld, featherRatio, camera);
+        break;
+      default:
+        this.hideHtmlConnectorLine();
+        break;
     }
   }
 

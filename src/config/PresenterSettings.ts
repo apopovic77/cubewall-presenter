@@ -1,5 +1,12 @@
 import { appConfig } from './AppConfig';
-import type { AxisLabelsMode, BackgroundType, BillboardMode, DepthOfFieldBlurLevel, TextureUvLayout } from './AppConfig';
+import type {
+  AxisLabelsMode,
+  BackgroundType,
+  BillboardMode,
+  BillboardConnectorMode,
+  DepthOfFieldBlurLevel,
+  TextureUvLayout,
+} from './AppConfig';
 
 export interface PresenterSettings {
   gridSize: number;
@@ -9,6 +16,8 @@ export interface PresenterSettings {
   waveSpeed: number;
   waveAmplitudeY: number;
   waveAmplitudeRot: number;
+  fieldAnimationSpeed: number;
+  fieldGlobalScale: number;
   enableHoverInteraction: boolean;
   autoSelectEnabled: boolean;
   autoSelectInterval: number;
@@ -64,6 +73,9 @@ export interface PresenterSettings {
   billboardAngleDegrees: number;
   billboardMode: BillboardMode;
   billboardHtmlContent: string;
+  billboardConnectorMode: BillboardConnectorMode;
+  billboardConnectorThicknessPx: number;
+  billboardConnectorFeatherPx: number;
   axisLabelsEnabled: boolean;
   axisLabelsStartDate: string;
   axisLabelsStepDays: number;
@@ -82,6 +94,8 @@ export const defaultPresenterSettings: PresenterSettings = {
   waveSpeed: appConfig.waveSpeed,
   waveAmplitudeY: appConfig.waveAmplitudeY,
   waveAmplitudeRot: appConfig.waveAmplitudeRot,
+  fieldAnimationSpeed: appConfig.fieldAnimationSpeed,
+  fieldGlobalScale: appConfig.fieldGlobalScale,
   enableHoverInteraction: true,
   autoSelectEnabled: true,
   autoSelectInterval: 6,
@@ -137,6 +151,9 @@ export const defaultPresenterSettings: PresenterSettings = {
   billboardAngleDegrees: appConfig.billboard.angleDegrees,
   billboardMode: appConfig.billboard.mode,
   billboardHtmlContent: appConfig.billboard.htmlContent,
+  billboardConnectorMode: appConfig.billboard.connectorMode,
+  billboardConnectorThicknessPx: appConfig.billboard.connectorThicknessPx,
+  billboardConnectorFeatherPx: appConfig.billboard.connectorFeatherPx,
   axisLabelsEnabled: appConfig.axisLabels.enabled,
   axisLabelsStartDate: appConfig.axisLabels.startDateIso,
   axisLabelsStepDays: appConfig.axisLabels.stepDays,

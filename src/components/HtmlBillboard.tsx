@@ -83,6 +83,20 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
 
   const clampedX = clamp(state.screenX, CLAMP_MARGIN, state.viewportWidth - CLAMP_MARGIN);
   const clampedY = clamp(state.screenY, CLAMP_MARGIN, state.viewportHeight - CLAMP_MARGIN);
+  const showSvgConnector =
+    settings.billboardMode === 'html' && settings.billboardConnectorMode === 'htmlSvg';
+  const lineStartX = clamp(state.cubeScreenX, 0, state.viewportWidth);
+  const lineStartY = clamp(state.cubeScreenY + 30, 0, state.viewportHeight);
+  const lineEndX = clampedX;
+  const lineEndY = clampedY + 24;
+  const connectorValid =
+    showSvgConnector &&
+    Number.isFinite(lineStartX) &&
+    Number.isFinite(lineStartY) &&
+    Number.isFinite(lineEndX) &&
+    Number.isFinite(lineEndY);
+
+  const connectorStroke = Math.max(1, settings.billboardConnectorThicknessPx ?? 5);
 
   return (
     <>
@@ -103,6 +117,25 @@ export function HtmlBillboard({ state, settings }: HtmlBillboardProps) {
           </motion.div>
         )}
       </AnimatePresence>
+      {state.isVisible && connectorValid && (
+        <svg className="cw-html-billboard__connector" width={state.viewportWidth} height={state.viewportHeight}>
+          <line
+            x1={lineStartX}
+            y1={lineStartY}
+            x2={lineEndX}
+            y2={lineEndY}
+            strokeWidth={connectorStroke}
+            stroke="url(#cw-html-connector-gradient)"
+            strokeLinecap="round"
+          />
+          <defs>
+            <linearGradient id="cw-html-connector-gradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(48, 174, 255, 0.9)" />
+              <stop offset="100%" stopColor="rgba(48, 174, 255, 0.0)" />
+            </linearGradient>
+          </defs>
+        </svg>
+      )}
     </>
   );
 }

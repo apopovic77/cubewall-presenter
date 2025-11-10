@@ -245,6 +245,37 @@ body {
   cursor: grabbing;
 }
 
+.cw-settings__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  margin-top: 12px;
+  border-radius: 18px;
+  background: rgba(12, 18, 36, 0.72);
+  border: 1px solid rgba(110, 140, 230, 0.3);
+}
+
+.cw-settings__meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cw-settings__meta span {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  color: rgba(200, 210, 255, 0.55);
+}
+
+.cw-settings__meta strong {
+  font-size: 0.95rem;
+  color: rgba(240, 245, 255, 0.95);
+  word-break: break-word;
+}
+
 .cw-settings__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
