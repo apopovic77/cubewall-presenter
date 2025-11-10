@@ -16,7 +16,7 @@ import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
-const ENABLE_SERVER_SETTINGS = import.meta.env.VITE_ENABLE_SETTINGS_SERVER === 'true';
+const ENABLE_SERVER_SETTINGS = import.meta.env.VITE_ENABLE_SETTINGS_SERVER !== 'false';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
 const LEGACY_BILLBOARD_MARKERS = [
   'nebula headline',
