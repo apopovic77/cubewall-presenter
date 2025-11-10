@@ -1108,15 +1108,7 @@ export class CubeWallPresenter {
     const radiusWorld = Math.max(0.0005, diameterWorld * 0.5);
     const featherRatio = Math.min(0.49, featherPx / Math.max(thicknessPx, 0.0001));
 
-    switch (this.config.billboard.connectorMode) {
-      case 'tube3d':
-      case 'screenSpace':
-        this.renderScreenSpaceConnector(startPoint, endPoint, radiusWorld, featherRatio, camera);
-        break;
-      default:
-        this.hideHtmlConnectorLine();
-        break;
-    }
+    this.renderScreenSpaceConnector(startPoint, endPoint, radiusWorld, featherRatio, camera);
   }
 
   private getAxisLabelAxes(): AxisLabelAxis[] {
