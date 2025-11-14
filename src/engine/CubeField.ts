@@ -1741,10 +1741,12 @@ export class CubeField {
     }
 
     const refreshLayout = this.layoutDirty;
-    if (refreshLayout) {
-      this.layoutDirty = false;
+    if (!this.physicsActive) {
+      if (refreshLayout) {
+        this.layoutDirty = false;
+      }
+      this.updateFieldLayout(deltaTime, refreshLayout);
     }
-    this.updateFieldLayout(deltaTime, refreshLayout);
     const rotationWaveEnabled = this.config.waveRotationEnabled;
     const normalDirection = this.getNormalDirection();
     if (this.physicsActive) {
@@ -2105,8 +2107,8 @@ export class CubeField {
   }
 
   private updatePhysicsDrivenCubes(deltaTime: number): void {
-    const lerpSpeed = this.config.interactionLerpSpeed * deltaTime;
-    const lift = this.config.selectedCubeLift;
+    const lerpSpeed = this.config.interactionLerpSpeed * Math.min(1, deltaTime * 60);
+    const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 1.25);
     const autorotate = this.config.slowAutorotateSpeed * deltaTime;
 
     const rootWorld = this.root.getWorldMatrix();

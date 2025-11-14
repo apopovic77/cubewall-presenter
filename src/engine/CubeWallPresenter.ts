@@ -206,7 +206,6 @@ export class CubeWallPresenter {
   private lastAxisCameraTarget = new Vector3(Number.NaN, Number.NaN, Number.NaN);
   private axisLabelsDirty = true;
   private lastEmittedBillboard: BillboardDisplayState | null = null;
-  private suppressNextSettingsCameraSnap = false;
 
   public updateBillboardScreenMetrics(metrics: BillboardScreenMetrics | null): void {
     const prev = this.billboardScreenMetrics;
@@ -245,7 +244,7 @@ export class CubeWallPresenter {
     if (Number.isFinite(radius)) {
       this.config.camera.radius = radius;
     }
-    this.suppressNextSettingsCameraSnap = true;
+    this.cameraController.setManualOverride(false);
     this.cameraSettingsChange?.({
       cameraRelativeOffsetX: capture.offset.x,
       cameraRelativeOffsetY: capture.offset.y,
@@ -431,7 +430,11 @@ export class CubeWallPresenter {
             const dy = moveEvent.clientY - pointerDownInfo.y;
             if (Math.sqrt(dx * dx + dy * dy) > 6) {
               pointerDownInfo.shouldTriggerClick = false;
-              this.setManualCameraOverride(true);
+            this.setManualCameraOverride(true);
+            this.cameraController.interruptAnimation();
+            this.logDebug(
+              `[Pointer] Drag detected (dx=${dx.toFixed(2)}, dy=${dy.toFixed(2)}). Manual override engaged.`,
+            );
             }
           }
           if (this.physicsActive) {
@@ -482,6 +485,7 @@ export class CubeWallPresenter {
           if (button !== 0) {
             this.cameraController.interruptAnimation();
             this.setManualCameraOverride(true);
+            this.logDebug('[Pointer] Non-left button down -> manual override');
             break;
           }
           const pickInfo = this.resolvePickInfo(pointerInfo);
@@ -493,7 +497,6 @@ export class CubeWallPresenter {
             }
             if (typeof event.preventDefault === 'function') event.preventDefault();
             if (typeof event.stopPropagation === 'function') event.stopPropagation();
-            this.cameraController.interruptAnimation();
             if (this.physicsActive) {
               const startX = 'clientX' in event ? event.clientX : 0;
               const startY = 'clientY' in event ? event.clientY : 0;
@@ -511,7 +514,6 @@ export class CubeWallPresenter {
             }
           } else {
             this.logDebug('POINTERDOWN (no pickable mesh) - waiting for POINTERUP/tap');
-            this.cameraController.interruptAnimation();
             this.physicsDragCandidate = null;
             this.skipNextPhysicsClick = false;
             pendingPick = null;
@@ -538,6 +540,7 @@ export class CubeWallPresenter {
           if (pointerDownInfo && pointerDownInfo.button !== 0) {
             this.setManualCameraOverride(true);
             this.syncRelativeCameraSettings();
+            this.logDebug('[Pointer] PointerUp non-left -> manual override stays');
             pointerDownInfo = null;
             pendingPick = null;
             break;
@@ -785,8 +788,10 @@ export class CubeWallPresenter {
       this.config.selectionCameraFollowEnabled &&
       animateCamera &&
       (!manualActive || reason === 'auto');
+    this.logDebug(
+      `[Camera] commitSelection -> reason=${reason} manualActive=${manualActive} animate=${animateCamera} follow=${this.config.selectionCameraFollowEnabled} shouldAnimate=${shouldAnimateCamera}`,
+    );
     if (shouldAnimateCamera) {
-      this.suppressNextSettingsCameraSnap = true;
       if (manualActive && reason === 'auto') {
         this.setManualCameraOverride(false);
       }
@@ -1076,7 +1081,7 @@ export class CubeWallPresenter {
         this.config.camera.flyToRadiusFactor = distance / this.config.cubeSize;
       }
     }
-    this.suppressNextSettingsCameraSnap = true;
+    this.cameraController.setManualOverride(false);
     this.cameraSettingsChange?.({
       cameraRelativeOffsetX: capture.offset.x,
       cameraRelativeOffsetY: capture.offset.y,
@@ -1242,6 +1247,9 @@ export class CubeWallPresenter {
   }
 
   public applySettings(settings: PresenterSettings): void {
+    this.logDebug(
+      `[Camera] applySettings start manualOverride=${this.cameraController.isManualOverrideActive()}`,
+    );
     const previousGeometryMode = this.config.geometryMode;
     const previousTileDepth = this.config.tileDepth;
     const previousTileAspectMode = this.config.tileAspectMode;
@@ -1377,24 +1385,9 @@ export class CubeWallPresenter {
       this.updateDepthOfFieldFocus(null);
     }
     this.cameraController.applySettings(settings);
-    if (
-      this.config.selectionCameraFollowEnabled &&
-      this.currentBillboardCell &&
-      !this.cameraController.isManualOverrideActive() &&
-      !this.suppressNextSettingsCameraSnap
-    ) {
-      const anchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
-      const normal =
-        this.currentSelectionNormalWorld ??
-        this.cubeField.getLiftNormalWorld(this.currentBillboardCell);
-      this.cameraController.focusOnTarget(anchor, {
-        mode: this.config.camera.orbitMode,
-        animate: false,
-        followMode: this.config.camera.followMode,
-        normal,
-      });
-    }
-    this.suppressNextSettingsCameraSnap = false;
+    this.logDebug(
+      '[Camera] applySettings end',
+    );
     this.cubeField.updateTextureUvLayout({
       layout: settings.textureUvLayout,
       sidePattern,

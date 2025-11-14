@@ -134,6 +134,12 @@ export class CameraOrbitController {
       basis,
     };
     this.targetPose = pose;
+    if (options.debug) {
+      console.debug(
+        '[CameraOrbitController] focusOnTarget',
+        { manualOverride: this.manualOverride, animate: options.animate, mode: this.orbitMode },
+      );
+    }
     if (options.animate === false) {
       this.applyPoseImmediately(pose);
       this.isAnimating = false;
