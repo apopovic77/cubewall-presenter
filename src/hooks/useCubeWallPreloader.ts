@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { usePreloader } from 'react-asset-preloader';
+import { usePreloader } from '../preloader';
 import { appConfig, type CubeLayoutConfig } from '../config/AppConfig';
 import { loadCubeContent, resolveContentProviderId } from '../content/registry';
 import type { CubeContentItem } from '../types/content';

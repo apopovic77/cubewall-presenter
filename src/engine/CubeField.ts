@@ -2160,7 +2160,8 @@ export class CubeField {
       const toTarget = targetPosition.subtract(cube.currentPosition);
       const distance = toTarget.length();
       if (distance > 1e-4) {
-        const desiredVelocity = toTarget.normalize().scale(this.config.interactionLift * 1.25);
+        const liftSpeed = Math.max(0.1, this.config.physicsLiftSpeed);
+        const desiredVelocity = toTarget.normalize().scale(liftSpeed);
         body.setMotionType(PhysicsMotionType.DYNAMIC);
         body.setLinearVelocity(desiredVelocity);
       } else {

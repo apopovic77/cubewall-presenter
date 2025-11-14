@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, ReactElement } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { PresenterSettings } from '../config/PresenterSettings';
 
@@ -126,6 +126,14 @@ const SLIDERS: SliderSpec[] = [
     formatter: (v) => `${(v * 180 / Math.PI).toFixed(0)}°/s`,
     isEnabled: (s) => s.physicsSelectedRotationMode === 'animated',
   },
+  {
+    key: 'physicsLiftSpeed',
+    label: 'Physics Lift Speed',
+    min: 0.2,
+    max: 4,
+    step: 0.05,
+    formatter: (v) => v.toFixed(2),
+  },
   { key: 'cameraRadius', label: 'Camera Radius', min: 20, max: 160, step: 1, formatter: (v) => `${Math.round(v)}` },
   { key: 'flyToRadiusFactor', label: 'Fly-To Radius', min: 1, max: 25, step: 0.1, formatter: (v) => v.toFixed(1) },
   { key: 'cameraLerpSpeed', label: 'Camera Lerp Speed', min: 0.01, max: 0.2, step: 0.005, formatter: (v) => v.toFixed(3) },
@@ -250,7 +258,7 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
   const renderSliderGroup = (keys: Array<keyof PresenterSettings>) => {
     const rendered = keys
       .map((key) => renderSliderControl(key))
-      .filter((element): element is JSX.Element => Boolean(element));
+      .filter((element): element is ReactElement => Boolean(element));
     if (rendered.length === 0) {
       return null;
     }
@@ -902,7 +910,7 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
               </select>
             </label>
           </div>
-          {renderSliderGroup(['physicsSelectedRotationSpeed'])}
+          {renderSliderGroup(['physicsSelectedRotationSpeed', 'physicsLiftSpeed'])}
         </>
       ),
     },

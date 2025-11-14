@@ -1,9 +1,13 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import { PreloaderProvider, PreloaderOverlay } from 'react-asset-preloader'
-import './index.css'
-import App from './App.tsx'
-import { AppPreloaderWrapper } from './components/AppPreloaderWrapper.tsx'
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import './index.css';
+import App from './App.tsx';
+import { AppPreloaderWrapper } from './components/AppPreloaderWrapper.tsx';
+import {
+  PreloaderProvider,
+  PreloaderOverlay,
+  type PreloaderAsset,
+} from './preloader';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -15,8 +19,8 @@ createRoot(document.getElementById('root')!).render(
         backgroundColor: '#05060b',
         textColor: '#ffffff',
         blurBackdrop: true,
-        onError: (error, asset) => {
-          console.warn('[CubeWall] Failed to preload asset', asset?.id ?? asset?.src, error)
+        onError: (error: unknown, asset?: PreloaderAsset) => {
+          console.warn('[CubeWall] Failed to preload asset', asset?.id ?? asset?.src, error);
         },
       }}
       autoStart={false}
@@ -27,4 +31,4 @@ createRoot(document.getElementById('root')!).render(
       </AppPreloaderWrapper>
     </PreloaderProvider>
   </StrictMode>,
-)
+);

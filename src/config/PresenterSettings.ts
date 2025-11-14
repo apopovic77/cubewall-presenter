@@ -77,6 +77,7 @@ export interface PresenterSettings {
   cameraAutoOrbitSpeed: number;
   physicsSelectedRotationMode: PhysicsSelectedRotationMode;
   physicsSelectedRotationSpeed: number;
+  physicsLiftSpeed: number;
   geometryMode: GeometryMode;
   tileDepth: number;
   tileAspectMode: TileAspectMode;
@@ -184,6 +185,7 @@ export const defaultPresenterSettings: PresenterSettings = {
   cameraAutoOrbitSpeed: appConfig.camera.autoOrbitSpeed,
   physicsSelectedRotationMode: appConfig.physicsSelectedRotationMode,
   physicsSelectedRotationSpeed: appConfig.physicsSelectedRotationSpeed,
+  physicsLiftSpeed: appConfig.physicsLiftSpeed,
   geometryMode: appConfig.geometryMode,
   tileDepth: appConfig.tileDepth,
   tileAspectMode: appConfig.tileAspectMode,

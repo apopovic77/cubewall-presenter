@@ -1,7 +1,7 @@
-import type { PropsWithChildren } from 'react';
+import type { PropsWithChildren, ReactElement } from 'react';
 import { useCubeWallPreloader } from '../hooks/useCubeWallPreloader';
 
-export function AppPreloaderWrapper({ children }: PropsWithChildren): JSX.Element | null {
+export function AppPreloaderWrapper({ children }: PropsWithChildren): ReactElement | null {
   const { ready, error } = useCubeWallPreloader();
 
   if (!ready) return null;

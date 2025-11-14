@@ -19,7 +19,6 @@
     "express": "^4.21.1",
     "framer-motion": "^12.10.4",
     "react": "^19.1.1",
-    "react-asset-preloader": "file:../react-asset-preloader",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {

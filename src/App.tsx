@@ -259,6 +259,7 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
   appConfig.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
   appConfig.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
+  appConfig.physicsLiftSpeed = settings.physicsLiftSpeed;
   appConfig.geometryMode = settings.geometryMode;
   appConfig.tileDepth = settings.tileDepth;
   appConfig.tileAspectMode = settings.tileAspectMode;

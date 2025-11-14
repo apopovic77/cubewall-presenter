@@ -1312,6 +1312,7 @@ export class CubeWallPresenter {
     this.config.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
     this.config.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
     this.config.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
+    this.config.physicsLiftSpeed = settings.physicsLiftSpeed;
     this.config.geometryMode = settings.geometryMode;
     this.config.tileDepth = settings.tileDepth;
     this.config.tileAspectMode = settings.tileAspectMode;

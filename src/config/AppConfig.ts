@@ -174,6 +174,7 @@ export interface CubeWallConfig {
   layout: CubeLayoutConfig;
   physicsSelectedRotationMode: PhysicsSelectedRotationMode;
   physicsSelectedRotationSpeed: number;
+  physicsLiftSpeed: number;
   geometryMode: GeometryMode;
   tileDepth: number;
   tileAspectMode: TileAspectMode;
@@ -312,6 +313,7 @@ export const appConfig: CubeWallConfig = {
   },
   physicsSelectedRotationMode: 'static',
   physicsSelectedRotationSpeed: Math.PI,
+  physicsLiftSpeed: 1.8,
   geometryMode: 'cube',
   tileDepth: 0.12,
   tileAspectMode: 'image',
