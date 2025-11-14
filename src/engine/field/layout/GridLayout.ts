@@ -2,7 +2,7 @@ import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { FieldParametersLike, LayoutInterface } from '../FieldTypes';
 
 export class GridLayout implements LayoutInterface {
-  public computePosition(index: number, totalCount: number, params: FieldParametersLike): Vector3 {
+  public computePosition(index: number, _totalCount: number, params: FieldParametersLike): Vector3 {
     const gridSize = Math.max(1, params.gridSize);
     const step = params.cellSize + params.cellSpacing;
     const half = (gridSize - 1) * 0.5;

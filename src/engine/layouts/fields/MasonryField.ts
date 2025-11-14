@@ -19,7 +19,7 @@ export class MasonryField implements FieldDefinition {
   private rowSpacing = 0.4;
   private groupAnchors = new Map<string, ColumnAnchor>();
 
-  public sample(index: number, time: number, context: FieldContext, target: Vector3): Vector3 {
+  public sample(index: number, _time: number, context: FieldContext, target: Vector3): Vector3 {
     if (index === 0) {
       this.initializeColumns(context);
     }

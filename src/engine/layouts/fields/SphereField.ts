@@ -5,7 +5,7 @@ export class SphereField implements FieldDefinition {
   public readonly id = 'sphere';
   public readonly name = 'Fibonacci Sphere';
 
-  public sample(index: number, time: number, context: FieldContext, target: Vector3): Vector3 {
+  public sample(index: number, _time: number, context: FieldContext, target: Vector3): Vector3 {
     const total = Math.max(1, context.totalCount);
     const offset = 2 / total;
     const increment = Math.PI * (3 - Math.sqrt(5));

@@ -1,13 +1,15 @@
 import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 
-export enum FieldTopology {
-  Cartesian = 'cartesian',
-}
+export const FieldTopology = {
+  Cartesian: 'cartesian',
+} as const;
+export type FieldTopology = typeof FieldTopology[keyof typeof FieldTopology];
 
-export enum FieldLayoutType {
-  Grid = 'grid',
-  Spiral = 'spiral',
-}
+export const FieldLayoutType = {
+  Grid: 'grid',
+  Spiral: 'spiral',
+} as const;
+export type FieldLayoutType = typeof FieldLayoutType[keyof typeof FieldLayoutType];
 
 export interface FieldTransform {
   position: Vector3;
