@@ -15,7 +15,11 @@ export function AxisLabelsOverlay({ labels }: AxisLabelsOverlayProps) {
         <div
           key={label.id}
           className="cw-axis-label"
-          style={{ left: `${label.screenX}px`, top: `${label.screenY}px` }}
+          style={{
+            left: `${label.screenX}px`,
+            top: `${label.screenY}px`,
+            transform: 'translate(-50%, -50%) scale(-1, -1)',
+          }}
         >
           {label.label}
         </div>

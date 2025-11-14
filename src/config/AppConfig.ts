@@ -12,9 +12,50 @@ export type TextureSidePattern = 'uniform' | 'alternating';
 export type TextureUvLayout = 'standard' | 'mirrorTopAndAlternatingSides' | 'uniformSides';
 export type CameraOrbitMode = 'flyTo' | 'relativeOffset';
 export type CameraFollowMode = 'focusOnce' | 'continuous';
-export type CubeLayoutMode = 'matrix' | 'axis';
+export type GeometryMode = 'cube' | 'tile';
+export type TileAspectMode = 'image' | 'square';
+export type PhysicsSelectedRotationMode = 'static' | 'animated';
+export type CubeLayoutMode = 'matrix' | 'axis' | 'masonry';
 export type CubeLayoutAxis = AxisLabelAxis;
 export type CubeLayoutOrder = 'asc' | 'desc';
+export type CubeTintMode = 'gradient' | 'solid';
+export type BaseOrientationMode = 'upright' | 'frontUp';
+
+export interface TileImageConfig {
+  baseWidth: number;
+  thickness: number;
+  defaultAspect: number;
+}
+
+export interface TileTextConfig {
+  tileWidth: number;
+  thickness: number;
+  maxRenderWidth: number;
+  padding: number;
+  verticalGap: number;
+  glassTintHex: string;
+  glassAlpha: number;
+}
+
+export interface TileSystemConfig {
+  captionsEnabled: boolean;
+  image: TileImageConfig;
+  text: TileTextConfig;
+}
+
+export interface MasonryConfig {
+  columnCount: number;
+  columnSpacing: number;
+  rowSpacing: number;
+}
+
+export interface CubeTintConfig {
+  mode: CubeTintMode;
+  solidColorHex: string;
+  gradientSaturation: number;
+  gradientValue: number;
+  diffuseScale: number;
+}
 
 export interface CubeLayoutConfig {
   mode: CubeLayoutMode;
@@ -42,6 +83,9 @@ export interface CubeWallConfig {
   waveAmplitudeRot: number;
   waveFrequencyRot: number;
   waveSpeed: number;
+  wavePositionEnabled: boolean;
+  waveRotationEnabled: boolean;
+  selectionSpinEnabled: boolean;
   wavePhaseSpread: number;
   fieldAnimationSpeed: number;
   fieldGlobalScale: number;
@@ -85,6 +129,7 @@ export interface CubeWallConfig {
     autoOrbitSpeed: number;
   };
   tintColor: Color3;
+  cubeTint: CubeTintConfig;
   ambientLightColorHex: string;
   ambientLightIntensity: number;
   directionalLightColorHex: string;
@@ -119,12 +164,22 @@ export interface CubeWallConfig {
     offset: { x: number; y: number; z: number };
     axes?: AxisLabelAxis[];
   };
+  fieldSystemV2Enabled?: boolean;
+  fieldLayoutType?: 'grid' | 'spiral';
   gridPlane: {
     origin: { x: number; y: number; z: number };
     normal: { x: number; y: number; z: number };
     forward: { x: number; y: number; z: number };
   };
   layout: CubeLayoutConfig;
+  physicsSelectedRotationMode: PhysicsSelectedRotationMode;
+  physicsSelectedRotationSpeed: number;
+  geometryMode: GeometryMode;
+  tileDepth: number;
+  tileAspectMode: TileAspectMode;
+  baseOrientation: BaseOrientationMode;
+  tiles: TileSystemConfig;
+  masonry: MasonryConfig;
 }
 
 export const appConfig: CubeWallConfig = {
@@ -140,12 +195,15 @@ export const appConfig: CubeWallConfig = {
   textureUvLayout: 'standard',
   textureSidePattern: 'uniform',
   textureMirrorTopBottom: false,
-  waveAmplitudeY: 0.15,
-  waveFrequencyY: 0.3,
-  waveAmplitudeRot: 0.08,
-  waveFrequencyRot: 0.25,
-  waveSpeed: 0.4,
-  wavePhaseSpread: 0.05,
+  waveAmplitudeY: 0.18,
+  waveFrequencyY: 0.35,
+  waveAmplitudeRot: 0.12,
+  waveFrequencyRot: 0.55,
+  waveSpeed: 0.45,
+  wavePositionEnabled: true,
+  waveRotationEnabled: true,
+  selectionSpinEnabled: true,
+  wavePhaseSpread: 0.12,
   fieldAnimationSpeed: 1,
   fieldGlobalScale: 1,
   individualXRotSpeed: 0.2,
@@ -196,6 +254,13 @@ export const appConfig: CubeWallConfig = {
     autoOrbitSpeed: 0.25,
   },
   tintColor: new Color3(0.3, 0.5, 1.0),
+  cubeTint: {
+    mode: 'gradient',
+    solidColorHex: '#d8d8ff',
+    gradientSaturation: 0.45,
+    gradientValue: 1,
+    diffuseScale: 0.4,
+  },
   ambientLightColorHex: '#ffffff',
   ambientLightIntensity: 0.35,
   directionalLightColorHex: '#ffffff',
@@ -231,6 +296,8 @@ export const appConfig: CubeWallConfig = {
     offset: { x: -1.0, y: 0.25, z: 0 },
     axes: ['rows'],
   },
+  fieldSystemV2Enabled: false,
+  fieldLayoutType: 'grid',
   gridPlane: {
     origin: { x: 0, y: 1, z: 0 },
     normal: { x: 0, y: 1, z: 0 },
@@ -242,5 +309,33 @@ export const appConfig: CubeWallConfig = {
     axisKey: 'publishedDay',
     sortOrder: 'desc',
     axisOrder: 'desc',
+  },
+  physicsSelectedRotationMode: 'static',
+  physicsSelectedRotationSpeed: Math.PI,
+  geometryMode: 'cube',
+  tileDepth: 0.12,
+  tileAspectMode: 'image',
+  baseOrientation: 'upright',
+  tiles: {
+    captionsEnabled: false,
+    image: {
+      baseWidth: 1.4,
+      thickness: 0.12,
+      defaultAspect: 1.6,
+    },
+    text: {
+      tileWidth: 1.4,
+      thickness: 0.08,
+      maxRenderWidth: 480,
+      padding: 24,
+      verticalGap: 0.12,
+      glassTintHex: '#9bd5ff',
+      glassAlpha: 0.78,
+    },
+  },
+  masonry: {
+    columnCount: 4,
+    columnSpacing: 0.35,
+    rowSpacing: 0.4,
   },
 };

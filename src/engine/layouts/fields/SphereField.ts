@@ -11,11 +11,10 @@ export class SphereField implements FieldDefinition {
     const increment = Math.PI * (3 - Math.sqrt(5));
     const y = ((index * offset) - 1) + (offset / 2);
     const r = Math.sqrt(Math.max(0, 1 - y * y));
-    const theta = (index % total) * increment + time * 0.25;
+    const theta = (index % total) * increment;
 
     const radius = (context.gridSize * (context.cubeSize + context.cubeSpacing)) * 0.45;
-    const wobble = Math.sin(time * 0.7 + index * 0.015) * context.cubeSize * 0.25;
-    const radiusScale = radius + wobble;
+    const radiusScale = radius;
 
     const x = Math.cos(theta) * r * radiusScale;
     const z = Math.sin(theta) * r * radiusScale;

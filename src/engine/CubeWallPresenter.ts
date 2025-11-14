@@ -1,7 +1,7 @@
 import { PointerEventTypes, PointerInfo } from '@babylonjs/core/Events/pointerEvents';
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import '@babylonjs/core/Culling/ray';
+import { Ray } from '@babylonjs/core/Culling/ray';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
 import { SceneController } from './SceneController';
 import { CubeField } from './CubeField';
@@ -26,6 +26,7 @@ import { Effect } from '@babylonjs/core/Materials/effect';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 import { CameraOrbitController } from './CameraOrbitController';
+import { BILLBOARD_FADE_SECONDS } from '../config/BillboardConstants';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CONNECTOR_SHADER_NAME = 'htmlConnectorLine';
@@ -74,12 +75,13 @@ function ensureConnectorShader(): void {
 
     uniform vec3 color;
     uniform float feather;
+    uniform float opacity;
 
     varying float vEdge;
 
     void main(void) {
       float edge = smoothstep(1.0 - feather, 1.0, vEdge);
-      float alpha = 1.0 - edge;
+      float alpha = (1.0 - edge) * opacity;
       if (alpha <= 0.004) {
         discard;
       }
@@ -87,6 +89,13 @@ function ensureConnectorShader(): void {
     }
   `;
   connectorShaderRegistered = true;
+}
+
+function cloneBillboardState(state: BillboardDisplayState): BillboardDisplayState {
+  return {
+    ...state,
+    content: state.content ? { ...state.content } : null,
+  };
 }
 
 export interface BillboardDisplayState {
@@ -99,6 +108,7 @@ export interface BillboardDisplayState {
   cubeScreenX: number;
   cubeScreenY: number;
   frameId: number;
+  contentVersion: number;
   content: {
     gridX: number;
     gridZ: number;
@@ -133,6 +143,7 @@ export interface CubeWallPresenterOptions {
   onDebug?: (line: string) => void;
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
   onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
+  onCameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
 }
 
 export class CubeWallPresenter {
@@ -140,16 +151,22 @@ export class CubeWallPresenter {
   private readonly engine: Engine;
   private readonly scene: Scene;
   private readonly cubeField: CubeField;
+  private readonly canvasElement: HTMLCanvasElement;
   private readonly config: CubeWallConfig;
   private readonly selectionChange?: (selection: CubeSelectionInfo | null) => void;
   private readonly debug?: (line: string) => void;
   private readonly billboardOverlay: BillboardOverlay;
   private readonly billboardStateChange?: (state: BillboardDisplayState | null) => void;
   private readonly axisLabelStateChange?: (labels: AxisLabelDisplayState[]) => void;
+  private readonly cameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
   private readonly axis3DLabelManager: Axis3DLabelManager;
   private readonly cameraController: CameraOrbitController;
+  private autoSequence: CubeCell[] = [];
+  private autoSequenceIndex = 0;
+  private billboardContentVersion = 0;
   private currentBillboardInfo: CubeSelectionInfo | null = null;
   private currentBillboardCell: CubeCell | null = null;
+  private currentSelectionNormalWorld: Vector3 | null = null;
   private billboardFrameId = 0;
   private sceneTime = 0;
   private disposed = false;
@@ -157,6 +174,8 @@ export class CubeWallPresenter {
   private autoSelectEnabled = false;
   private autoSelectInterval = 6;
   private autoSelectElapsed = 0;
+  private contentItems: CubeContentItem[] = [];
+  private contentOptionsSnapshot: Partial<CubeContentOptions> | undefined;
   private axisLabelStartDateMs = Number.NaN;
   private readonly axisLabelDateFormatter = new Intl.DateTimeFormat('de-DE', {
     day: 'numeric',
@@ -176,12 +195,66 @@ export class CubeWallPresenter {
   private htmlConnectorTubeMaterial: StandardMaterial | null = null;
   private readonly htmlConnectorColor = new Color3(0.3, 0.7, 1.0);
   private billboardScreenMetrics: BillboardScreenMetrics | null = null;
+  private connectorCurrentAlpha = 0;
+  private connectorTargetAlpha = 0;
+  private readonly connectorFadeSpeed = BILLBOARD_FADE_SECONDS > 0 ? 1 / BILLBOARD_FADE_SECONDS : 1;
+  private pendingDofUpdateFrames = 0;
+  private readonly forceDofFrames = 6;
+  private wheelListener: ((event: WheelEvent) => void) | null = null;
+  private pendingWheelSyncFrames = 0;
+  private lastAxisCameraPos = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private lastAxisCameraTarget = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private axisLabelsDirty = true;
+  private lastEmittedBillboard: BillboardDisplayState | null = null;
+  private suppressNextSettingsCameraSnap = false;
 
   public updateBillboardScreenMetrics(metrics: BillboardScreenMetrics | null): void {
+    const prev = this.billboardScreenMetrics;
+    const same =
+      (prev === null && metrics === null) ||
+      (prev !== null &&
+        metrics !== null &&
+        Math.abs(prev.left - metrics.left) < 0.5 &&
+        Math.abs(prev.top - metrics.top) < 0.5 &&
+        Math.abs(prev.width - metrics.width) < 0.5 &&
+        Math.abs(prev.height - metrics.height) < 0.5);
+    if (same) {
+      return;
+    }
     this.billboardScreenMetrics = metrics;
     if (this.currentBillboardCell && this.currentBillboardInfo) {
       this.emitHtmlBillboardState();
     }
+    this.axisLabelsDirty = true;
+  }
+
+  private syncRelativeCameraSettings(): void {
+    if (!this.currentBillboardCell) return;
+    const anchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
+    const normal =
+      this.currentSelectionNormalWorld ??
+      this.cubeField.getLiftNormalWorld(this.currentBillboardCell);
+    const capture = this.cameraController.captureRelativeOffset(anchor, normal);
+    this.config.camera.relativeOffset.x = capture.offset.x;
+    this.config.camera.relativeOffset.y = capture.offset.y;
+    this.config.camera.relativeOffset.z = capture.offset.z;
+    this.config.camera.relativeLookAtOffset.x = capture.lookAtOffset.x;
+    this.config.camera.relativeLookAtOffset.y = capture.lookAtOffset.y;
+    this.config.camera.relativeLookAtOffset.z = capture.lookAtOffset.z;
+    const radius = this.sceneController.getCamera().radius;
+    if (Number.isFinite(radius)) {
+      this.config.camera.radius = radius;
+    }
+    this.suppressNextSettingsCameraSnap = true;
+    this.cameraSettingsChange?.({
+      cameraRelativeOffsetX: capture.offset.x,
+      cameraRelativeOffsetY: capture.offset.y,
+      cameraRelativeOffsetZ: capture.offset.z,
+      cameraRelativeLookAtOffsetX: capture.lookAtOffset.x,
+      cameraRelativeLookAtOffsetY: capture.lookAtOffset.y,
+      cameraRelativeLookAtOffsetZ: capture.lookAtOffset.z,
+      cameraRadius: radius,
+    });
   }
 
   public async triggerPhysicsDrop(): Promise<void> {
@@ -189,7 +262,7 @@ export class CubeWallPresenter {
       this.savedHoverInteraction = this.hoverInteractionEnabled;
       this.savedAutoSelect = this.autoSelectEnabled;
       this.cubeField.selectCell(null);
-      this.updateBillboard(null, false);
+      this.updateBillboard(null, { animate: false, reason: 'system' });
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
       this.physicsActive = true;
@@ -229,12 +302,21 @@ export class CubeWallPresenter {
     this.debug?.('[Physics] Mode: off');
   }
 
-  private updateDepthOfFieldFocus(cell: CubeCell | null): void {
+  public isPhysicsActive(): boolean {
+    return this.physicsMode !== 'off';
+  }
+
+  public markAxisLabelsDirty(): void {
+    this.axisLabelsDirty = true;
+  }
+
+  private updateDepthOfFieldFocus(cell: CubeCell | null, cameraPos?: Vector3): void {
     if (!this.config.depthOfFieldEnabled || !this.config.depthOfFieldAutoFocusEnabled) return;
     const targetCell = cell ?? this.cubeField.getCurrentSelection() ?? this.cubeField.getCenterCell();
     if (!targetCell) return;
     const camera = this.sceneController.getCamera();
-    const distance = camera.position.subtract(targetCell.mesh.getAbsolutePosition()).length();
+    const referencePos = cameraPos ?? camera.position;
+    const distance = referencePos.subtract(targetCell.mesh.getAbsolutePosition()).length();
     const adjustedDistance = distance + this.config.depthOfFieldAutoFocusOffset;
     const sharpness = Math.max(0.1, this.config.depthOfFieldAutoFocusSharpness);
     const effectiveFStop = Math.max(0.1, this.config.depthOfFieldFStop / sharpness);
@@ -243,8 +325,17 @@ export class CubeWallPresenter {
     this.sceneController.setDepthOfFieldFocusDistance(adjustedDistance, effectiveFStop);
   }
 
-  constructor({ canvas, config = appConfig, onSelectionChange, onDebug, onBillboardStateChange, onAxisLabelsChange }: CubeWallPresenterOptions) {
+  constructor({
+    canvas,
+    config = appConfig,
+    onSelectionChange,
+    onDebug,
+    onBillboardStateChange,
+    onAxisLabelsChange,
+    onCameraSettingsChange,
+  }: CubeWallPresenterOptions) {
     this.config = config;
+    this.canvasElement = canvas;
     this.sceneController = new SceneController({ canvas, config: this.config });
     this.engine = this.sceneController.getEngine();
     this.scene = this.sceneController.getScene();
@@ -253,10 +344,21 @@ export class CubeWallPresenter {
     this.debug = onDebug;
     this.billboardStateChange = onBillboardStateChange;
     this.axisLabelStateChange = onAxisLabelsChange;
+    this.cameraSettingsChange = onCameraSettingsChange;
     this.cameraController = new CameraOrbitController(this.sceneController.getCamera(), this.config);
+    this.cameraController.onFocusSettled = () => {
+      this.syncRelativeCameraSettings();
+      if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
+        const cameraPos = this.sceneController.getCamera().position.clone();
+        this.updateDepthOfFieldFocus(this.currentBillboardCell, cameraPos);
+        this.pendingDofUpdateFrames = this.forceDofFrames;
+      }
+    };
     this.setupPointerInteractions();
+    this.setupWheelCapture();
 
     this.axis3DLabelManager = new Axis3DLabelManager(this.scene);
+    this.refreshAutoSequence();
 
     this.refreshAxisAnchors();
     this.updateAxisLabelStartDate();
@@ -266,8 +368,7 @@ export class CubeWallPresenter {
       config: this.config,
       onRequestClose: () => {
         this.cubeField.selectCell(null);
-        this.updateBillboard(null, false);
-        this.cameraController.focusOnOverview(true);
+        this.updateBillboard(null, { animate: false, reason: 'manual' });
       },
     });
 
@@ -299,9 +400,18 @@ export class CubeWallPresenter {
     this.cameraController.setManualOverride(active);
   }
 
+  private setupWheelCapture(): void {
+    this.wheelListener = () => {
+      this.setManualCameraOverride(true);
+      this.cameraController.captureCurrentCameraState();
+      this.pendingWheelSyncFrames = 2;
+    };
+    this.canvasElement.addEventListener('wheel', this.wheelListener, { passive: true });
+  }
+
   private setupPointerInteractions(): void {
     let lastHoveredId: number | null = null;
-    let pointerDownInfo: { x: number; y: number; shouldTriggerClick: boolean } | null = null;
+    let pointerDownInfo: { x: number; y: number; shouldTriggerClick: boolean; button: number } | null = null;
     let pendingPick: { cell: CubeCell; meshName?: string } | null = null;
     let pointerClickHandled = false;
 
@@ -310,11 +420,18 @@ export class CubeWallPresenter {
       switch (pointerInfo.type) {
         case PointerEventTypes.POINTERMOVE: {
           const moveEvent = pointerInfo.event as PointerEvent | MouseEvent | null;
-          if (pointerDownInfo && moveEvent && 'clientX' in moveEvent && 'clientY' in moveEvent) {
+          if (
+            moveEvent &&
+            pointerDownInfo &&
+            'clientX' in moveEvent &&
+            'clientY' in moveEvent &&
+            (moveEvent.buttons & 1)
+          ) {
             const dx = moveEvent.clientX - pointerDownInfo.x;
             const dy = moveEvent.clientY - pointerDownInfo.y;
             if (Math.sqrt(dx * dx + dy * dy) > 6) {
               pointerDownInfo.shouldTriggerClick = false;
+              this.setManualCameraOverride(true);
             }
           }
           if (this.physicsActive) {
@@ -349,12 +466,23 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERDOWN: {
           const event = pointerInfo.event as PointerEvent | MouseEvent;
-          if ('button' in event && event.button !== 0) break;
+          const button = 'button' in event ? event.button ?? 0 : 0;
+          if (button !== 0 && button !== 1 && button !== 2) break;
           pointerClickHandled = false;
           if ('clientX' in event && 'clientY' in event) {
-            pointerDownInfo = { x: event.clientX, y: event.clientY, shouldTriggerClick: true };
+            pointerDownInfo = {
+              x: event.clientX,
+              y: event.clientY,
+              shouldTriggerClick: button === 0,
+              button,
+            };
           } else {
             pointerDownInfo = null;
+          }
+          if (button !== 0) {
+            this.cameraController.interruptAnimation();
+            this.setManualCameraOverride(true);
+            break;
           }
           const pickInfo = this.resolvePickInfo(pointerInfo);
           if (pickInfo?.pickedMesh && pickInfo.pickedMesh.isPickable) {
@@ -392,7 +520,8 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERUP: {
           const event = pointerInfo.event as PointerEvent | MouseEvent;
-          if ('button' in event && event.button !== 0) break;
+          const button = 'button' in event ? event.button ?? 0 : 0;
+          if (button !== 0 && button !== 1 && button !== 2) break;
           if (this.physicsActive) {
             if (this.activePhysicsDrag) {
               this.finishActivePhysicsDrag();
@@ -406,7 +535,14 @@ export class CubeWallPresenter {
             pendingPick = null;
             break;
           }
-          if (pointerDownInfo && 'clientX' in event && 'clientY' in event) {
+          if (pointerDownInfo && pointerDownInfo.button !== 0) {
+            this.setManualCameraOverride(true);
+            this.syncRelativeCameraSettings();
+            pointerDownInfo = null;
+            pendingPick = null;
+            break;
+          }
+          if (pointerDownInfo && pointerDownInfo.button === 0 && 'clientX' in event && 'clientY' in event) {
             const dx = event.clientX - pointerDownInfo.x;
             const dy = event.clientY - pointerDownInfo.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
@@ -416,7 +552,7 @@ export class CubeWallPresenter {
                 if (pendingPick) {
                   this.applySelection(pendingPick.cell, pendingPick.meshName);
                 } else {
-                  this.handlePick(pointerInfo);
+              this.handlePick(pointerInfo);
                 }
                 pointerClickHandled = true;
               }
@@ -424,6 +560,8 @@ export class CubeWallPresenter {
               this.logDebug(`POINTERUP -> manual camera move (drag distance ${distance.toFixed(2)})`);
               this.setManualCameraOverride(true);
               this.cameraController.captureCurrentCameraState();
+              this.syncRelativeCameraSettings();
+        this.syncRelativeCameraSettings();
               if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
                 const dof = this.sceneController.getRenderingPipeline()?.depthOfField;
                 if (dof) {
@@ -433,6 +571,7 @@ export class CubeWallPresenter {
                   this.updateDepthOfFieldFocus(null);
                 }
               }
+              this.syncRelativeCameraSettings();
               pointerClickHandled = true;
             }
           }
@@ -511,7 +650,7 @@ export class CubeWallPresenter {
   private startPhysicsDrag(cell: CubeCell): void {
     this.logDebug(`physics drag start -> cube_${cell.gridX}_${cell.gridZ}`);
     this.cubeField.selectCell(null);
-    this.updateBillboard(null, false);
+    this.updateBillboard(null, { animate: false, reason: 'manual' });
     this.cubeField.beginPhysicsDrag(cell);
   }
 
@@ -573,7 +712,7 @@ export class CubeWallPresenter {
     if (!pickInfo) {
       this.logDebug('handlePick: no pick info');
       this.cubeField.selectCell(null);
-      this.updateBillboard(null);
+      this.updateBillboard(null, { reason: 'manual' });
       return;
     }
 
@@ -581,7 +720,7 @@ export class CubeWallPresenter {
     if (!mesh || !mesh.isPickable) {
       this.logDebug('handlePick: mesh missing or not pickable');
       this.cubeField.selectCell(null);
-      this.updateBillboard(null);
+      this.updateBillboard(null, { reason: 'manual' });
       return;
     }
 
@@ -589,35 +728,88 @@ export class CubeWallPresenter {
     if (!cell) {
       this.logDebug(`handlePick: no cube data for mesh ${mesh.name}`);
       this.cubeField.selectCell(null);
-      this.updateBillboard(null);
+      this.updateBillboard(null, { reason: 'manual' });
       return;
     }
     this.applySelection(cell, mesh.name);
-  }
+    }
 
   private applySelection(cell: CubeCell, meshName?: string): void {
     const alreadySelected = cell.isSelected;
     this.logDebug(`handlePick: ${meshName ?? cell.mesh.name} -> ${alreadySelected ? 'deselect' : 'select'}`);
-    this.cubeField.selectCell(alreadySelected ? null : cell);
-    if (!alreadySelected && this.hoverInteractionEnabled && !this.physicsActive) {
-      this.cubeField.triggerRipple(cell);
+    if (alreadySelected) {
+      this.commitSelection(null, { animateCamera: true, reason: 'manual' });
+      return;
     }
-    this.updateBillboard(alreadySelected ? null : cell);
+    const triggerRipple = this.hoverInteractionEnabled && !this.physicsActive;
+    this.commitSelection(cell, {
+      triggerRipple,
+      animateCamera: true,
+      reason: 'auto',
+    });
+  }
+
+  private commitSelection(
+    target: CubeCell | null,
+    options: {
+      triggerRipple?: boolean;
+      animateCamera?: boolean;
+      reason?: 'manual' | 'auto';
+    } = {},
+  ): void {
+    const triggerRipple = options.triggerRipple ?? false;
+    const animateCamera = options.animateCamera ?? true;
+    const reason = options.reason ?? 'manual';
+    const manualActive = this.cameraController.isManualOverrideActive();
+
+    if (!target) {
+      this.cubeField.selectCell(null);
+      const shouldAnimateBillboard = animateCamera && (!manualActive || reason === 'auto');
+      this.updateBillboard(null, { animate: shouldAnimateBillboard, reason });
+      const cameraPos = this.sceneController.getCamera().position.clone();
+      this.updateDepthOfFieldFocus(null, cameraPos);
+      this.currentSelectionNormalWorld = null;
+      return;
+    }
+
+    this.cubeField.selectCell(target);
+    if (triggerRipple) {
+      this.cubeField.triggerRipple(target);
+    }
+    this.currentSelectionNormalWorld = this.cubeField.getLiftNormalWorld(target);
+    this.updateBillboard(target, { reason });
     this.autoSelectElapsed = 0;
-    this.updateDepthOfFieldFocus(alreadySelected ? null : cell);
-    if (this.config.selectionCameraFollowEnabled) {
-      if (!alreadySelected) {
-        const anchor = cell.mesh.getAbsolutePosition().clone();
-        this.cameraController.focusOnTarget(anchor, {
-          mode: this.config.camera.orbitMode,
-          animate: true,
-          followMode: this.config.camera.followMode,
-        });
+    const cameraPos = this.sceneController.getCamera().position.clone();
+    this.updateDepthOfFieldFocus(target, cameraPos);
+    const shouldAnimateCamera =
+      this.config.selectionCameraFollowEnabled &&
+      animateCamera &&
+      (!manualActive || reason === 'auto');
+    if (shouldAnimateCamera) {
+      this.suppressNextSettingsCameraSnap = true;
+      if (manualActive && reason === 'auto') {
+        this.setManualCameraOverride(false);
       }
+      const anchor = target.mesh.getAbsolutePosition().clone();
+      const normal =
+        this.currentSelectionNormalWorld ?? this.cubeField.getLiftNormalWorld(target);
+      this.cameraController.focusOnTarget(anchor, {
+        mode: this.config.camera.orbitMode,
+        animate: true,
+        followMode: this.config.camera.followMode,
+        normal,
+      });
     }
   }
 
-  private updateBillboard(cell: CubeCell | null, animate = true): void {
+  private updateBillboard(
+    cell: CubeCell | null,
+    options?: { animate?: boolean; reason?: 'manual' | 'auto' | 'system' },
+  ): void {
+    const animate = options?.animate ?? true;
+    const reason = options?.reason ?? 'system';
+    const manualActive = this.cameraController.isManualOverrideActive();
+
     if (!cell) {
       this.billboardOverlay.deselect(animate);
       this.selectionChange?.(null);
@@ -625,11 +817,19 @@ export class CubeWallPresenter {
       this.hideHtmlConnectorLine();
       this.currentBillboardInfo = null;
       this.currentBillboardCell = null;
+      this.currentSelectionNormalWorld = null;
       this.billboardScreenMetrics = null;
+      if (this.config.selectionCameraFollowEnabled && !manualActive) {
+        this.cameraController.focusOnOverview(animate);
+        if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
+          const cameraPos = this.sceneController.getCamera().position.clone();
+          this.updateDepthOfFieldFocus(null, cameraPos);
+        }
+      }
+      if (!this.config.depthOfFieldAutoFocusEnabled && !manualActive) {
+        this.cameraController.setManualOverride(true);
+      }
       return;
-    }
-    if (this.cameraController.isManualOverrideActive() && this.currentBillboardCell !== cell) {
-      this.setManualCameraOverride(false);
     }
     const info = this.cubeField.getSelectionInfo();
     if (!info) {
@@ -641,12 +841,71 @@ export class CubeWallPresenter {
       this.currentBillboardCell = null;
       return;
     }
+    const prevInfo = this.currentBillboardInfo;
+    const contentChanged =
+      !prevInfo ||
+      this.currentBillboardCell !== cell ||
+      prevInfo.gridX !== info.gridX ||
+      prevInfo.gridZ !== info.gridZ ||
+      prevInfo.textureUrl !== info.textureUrl ||
+      (prevInfo.content?.id ?? null) !== (info.content?.id ?? null);
+    if (contentChanged) {
+      this.billboardContentVersion += 1;
+    }
+    if (manualActive && this.currentBillboardCell !== cell && reason !== 'manual') {
+      this.setManualCameraOverride(false);
+    }
     this.billboardScreenMetrics = null;
     this.billboardOverlay.select(cell, info);
     this.selectionChange?.(info);
     this.currentBillboardInfo = info;
     this.currentBillboardCell = cell;
     this.emitHtmlBillboardState();
+  }
+
+  private refreshAutoSequence(): void {
+    this.autoSequence = this.cubeField.getAllCells();
+    this.autoSequenceIndex = 0;
+  }
+
+  private getNextAutoSequenceCell(): CubeCell | null {
+    if (this.autoSequence.length === 0) {
+      this.refreshAutoSequence();
+    }
+    const total = this.autoSequence.length;
+    if (total === 0) return null;
+    let attempts = 0;
+    while (attempts < total) {
+      const candidate = this.autoSequence[this.autoSequenceIndex % total];
+      this.autoSequenceIndex = (this.autoSequenceIndex + 1) % total;
+      attempts += 1;
+      if (!candidate) continue;
+      if (candidate.mesh.isDisposed()) continue;
+      if (candidate.isSelected) continue;
+      return candidate;
+    }
+    this.refreshAutoSequence();
+    const refreshedTotal = this.autoSequence.length;
+    attempts = 0;
+    while (attempts < refreshedTotal) {
+      const candidate = this.autoSequence[this.autoSequenceIndex % refreshedTotal];
+      this.autoSequenceIndex = (this.autoSequenceIndex + 1) % refreshedTotal;
+      attempts += 1;
+      if (!candidate) continue;
+      if (candidate.mesh.isDisposed()) continue;
+      if (candidate.isSelected) continue;
+      return candidate;
+    }
+    return null;
+  }
+
+  private performAutoSelection(cell: CubeCell): void {
+    const triggerRipple = this.hoverInteractionEnabled && !this.physicsActive;
+    this.commitSelection(cell, {
+      triggerRipple,
+      animateCamera: true,
+      reason: 'auto',
+    });
   }
 
   private resolvePickInfo(pointerInfo: PointerInfo, silent = false): PickingInfo | null {
@@ -664,7 +923,7 @@ export class CubeWallPresenter {
     let x = 0;
     let y = 0;
     
-    if ('offsetX' in event && typeof event.offsetX === 'number' && typeof event.offsetY === 'number') {
+      if ('offsetX' in event && typeof event.offsetX === 'number' && typeof event.offsetY === 'number') {
       x = event.offsetX;
       y = event.offsetY;
     } else if ('clientX' in event && 'clientY' in event) {
@@ -676,7 +935,7 @@ export class CubeWallPresenter {
     }
     
     // Scale coordinates to canvas internal resolution
-    const rect = canvas.getBoundingClientRect();
+        const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const scaledX = x * scaleX;
@@ -685,7 +944,7 @@ export class CubeWallPresenter {
     // Try picking with scaled coordinates
     const pickResult = this.scene.pick(scaledX, scaledY, (mesh) => mesh.isPickable);
     
-    if (!silent) {
+        if (!silent) {
       const pickableMeshes = this.scene.meshes.filter((m) => m.isPickable);
       this.logDebug(`pick(${Math.round(x)}, ${Math.round(y)}) scaled to (${Math.round(scaledX)}, ${Math.round(scaledY)}) => ${pickResult?.pickedMesh?.name ?? 'none'} [${pickableMeshes.length} pickable, canvas ${canvas.width}x${canvas.height}, display ${Math.round(rect.width)}x${Math.round(rect.height)}]`);
     }
@@ -721,14 +980,21 @@ export class CubeWallPresenter {
     this.debug(line);
   }
 
-  public setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): void {
+  public async setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): Promise<void> {
     console.info('[CubeWallPresenter] setContent', {
       items: items.length,
       hasOptions: Boolean(options),
     });
-    this.cubeField.setContent(items, options);
+    this.contentItems = items;
+    this.contentOptionsSnapshot = options
+      ? {
+          ...options,
+          layout: options.layout ? { ...options.layout } : options.layout,
+        }
+      : undefined;
+    await this.cubeField.setContent(items, options);
     if (this.currentBillboardCell) {
-      this.updateBillboard(this.currentBillboardCell, false);
+      this.updateBillboard(this.currentBillboardCell, { animate: false, reason: 'system' });
     } else {
       this.emitHtmlBillboardState();
     }
@@ -737,6 +1003,39 @@ export class CubeWallPresenter {
   public randomizeFieldOrientation(): void {
     this.cubeField.randomizeFieldOrientation();
     this.logDebug('[Field] Randomized orientation');
+  }
+
+  public resetCameraToDefaults(): void {
+    this.pendingWheelSyncFrames = 0;
+    this.setManualCameraOverride(false);
+    if (this.config.selectionCameraFollowEnabled && this.currentBillboardCell) {
+      const anchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
+      this.currentSelectionNormalWorld = this.cubeField.getLiftNormalWorld(this.currentBillboardCell);
+      this.cameraController.focusOnTarget(anchor, {
+        mode: this.config.camera.orbitMode,
+        animate: true,
+        followMode: this.config.camera.followMode,
+        normal: this.currentSelectionNormalWorld,
+      });
+    } else {
+      this.currentSelectionNormalWorld = null;
+      this.cameraController.focusOnOverview(true);
+    }
+    this.syncRelativeCameraSettings();
+  }
+
+  public triggerLineWaveField(): void {
+    const started = this.cubeField.startLineWaveField();
+    if (started) {
+      this.logDebug('[Field] Morphing to Wave Line');
+    } else {
+      this.logDebug('[Field] Wave Line already active');
+    }
+  }
+
+  public toggleFieldAutoRotation(): void {
+    const active = this.cubeField.toggleFieldAutoRotation();
+    this.logDebug(active ? '[Field] Auto-rotation enabled' : '[Field] Auto-rotation disabled');
   }
 
   public startFieldMorph(): void {
@@ -755,13 +1054,39 @@ export class CubeWallPresenter {
       return null;
     }
     const anchor = selection.mesh.getAbsolutePosition().clone();
-    const capture = this.cameraController.captureRelativeOffset(anchor);
+    const normal =
+      this.currentSelectionNormalWorld ?? this.cubeField.getLiftNormalWorld(selection);
+    const capture = this.cameraController.captureRelativeOffset(anchor, normal);
     this.config.camera.relativeOffset.x = capture.offset.x;
     this.config.camera.relativeOffset.y = capture.offset.y;
     this.config.camera.relativeOffset.z = capture.offset.z;
     this.config.camera.relativeLookAtOffset.x = capture.lookAtOffset.x;
     this.config.camera.relativeLookAtOffset.y = capture.lookAtOffset.y;
     this.config.camera.relativeLookAtOffset.z = capture.lookAtOffset.z;
+    const radius = this.sceneController.getCamera().radius;
+    if (Number.isFinite(radius)) {
+      this.config.camera.radius = radius;
+    }
+    const currentCell = this.currentBillboardCell ?? this.cubeField.getCurrentSelection();
+    if (currentCell) {
+      const anchorPos = currentCell.mesh.getAbsolutePosition().clone();
+      const toCamera = this.sceneController.getCamera().position.subtract(anchorPos);
+      const distance = toCamera.length();
+      if (Number.isFinite(distance)) {
+        this.config.camera.flyToRadiusFactor = distance / this.config.cubeSize;
+      }
+    }
+    this.suppressNextSettingsCameraSnap = true;
+    this.cameraSettingsChange?.({
+      cameraRelativeOffsetX: capture.offset.x,
+      cameraRelativeOffsetY: capture.offset.y,
+      cameraRelativeOffsetZ: capture.offset.z,
+      cameraRelativeLookAtOffsetX: capture.lookAtOffset.x,
+      cameraRelativeLookAtOffsetY: capture.lookAtOffset.y,
+      cameraRelativeLookAtOffsetZ: capture.lookAtOffset.z,
+      cameraRadius: this.config.camera.radius,
+      flyToRadiusFactor: this.config.camera.flyToRadiusFactor,
+    });
     return capture;
   }
 
@@ -779,16 +1104,89 @@ export class CubeWallPresenter {
       if (this.config.selectionCameraFollowEnabled && this.config.camera.followMode === 'continuous') {
         const followCell = this.currentBillboardCell ?? this.cubeField.getCurrentSelection();
         if (followCell) {
-          this.cameraController.updateContinuousTarget(followCell.mesh.getAbsolutePosition());
+          this.cameraController.updateContinuousTarget(
+            followCell.mesh.getAbsolutePosition(),
+            this.currentSelectionNormalWorld ?? undefined,
+          );
         }
       }
       this.cameraController.update(deltaTime);
+      if (this.pendingWheelSyncFrames > 0) {
+        this.pendingWheelSyncFrames -= 1;
+        if (this.pendingWheelSyncFrames === 0) {
+          this.syncRelativeCameraSettings();
+        }
+      }
+      if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled && this.currentBillboardCell) {
+        const cameraPos = this.sceneController.getCamera().position.clone();
+        this.updateDepthOfFieldFocus(this.currentBillboardCell, cameraPos);
+        if (this.pendingDofUpdateFrames > 0) {
+          this.pendingDofUpdateFrames -= 1;
+        }
+      }
       this.billboardOverlay.update();
       if (this.config.billboard.mode === 'html' && this.currentBillboardCell && this.currentBillboardInfo) {
         this.emitHtmlBillboardState();
       }
+      const camera = this.sceneController.getCamera();
+      const cameraPos = camera.position;
+      const cameraTarget = camera.target;
+      if (
+        !Number.isFinite(this.lastAxisCameraPos.x) ||
+        Vector3.DistanceSquared(this.lastAxisCameraPos, cameraPos) > 1e-4 ||
+        Vector3.DistanceSquared(this.lastAxisCameraTarget, cameraTarget) > 1e-4
+      ) {
+        this.lastAxisCameraPos.copyFrom(cameraPos);
+        this.lastAxisCameraTarget.copyFrom(cameraTarget);
+        this.axisLabelsDirty = true;
+      }
+      if (
+        this.axisLabelsDirty &&
+        this.config.axisLabels.enabled &&
+        this.config.axisLabels.mode === 'overlay'
+      ) {
+        this.emitAxisLabelsState();
+      }
+      this.updateConnectorFade(deltaTime);
       this.scene.render();
     });
+  }
+
+  public selectNextCube(forceFirst?: boolean): void {
+    let cell: CubeCell | null;
+    if (forceFirst) {
+      const allCells: CubeCell[] = this.cubeField.getAllCells();
+      cell = allCells.find((candidate: CubeCell) => !candidate.isSelected) ?? allCells[0] ?? null;
+    } else {
+      cell = this.getNextAutoSequenceCell();
+      if (!cell) {
+        cell = this.cubeField.getRandomCell(true);
+      }
+    }
+    if (!cell) {
+      this.logDebug('[AutoSelect] No cubes available.');
+      return;
+    }
+    if (cell.isSelected) {
+      const fallback = this.cubeField.getRandomCell(false);
+      if (fallback) {
+        cell = fallback;
+      } else {
+        return;
+      }
+    }
+    this.autoSelectElapsed = 0;
+    this.performAutoSelection(cell);
+  }
+
+  public selectRandomCube(): void {
+    const cell = this.cubeField.getRandomCell(true);
+    if (!cell) {
+      this.logDebug('[AutoSelect] No cubes available for random selection.');
+      return;
+    }
+    this.autoSelectElapsed = 0;
+    this.performAutoSelection(cell);
   }
 
   public debugAxisSummary(): void {
@@ -844,17 +1242,30 @@ export class CubeWallPresenter {
   }
 
   public applySettings(settings: PresenterSettings): void {
+    const previousGeometryMode = this.config.geometryMode;
+    const previousTileDepth = this.config.tileDepth;
+    const previousTileAspectMode = this.config.tileAspectMode;
+    const previousOrientation = this.config.baseOrientation;
+    const previousWavePosition = this.config.wavePositionEnabled;
+    const previousWaveRotation = this.config.waveRotationEnabled;
+    const previousTileCaptions = this.config.tiles.captionsEnabled;
     const targetGridSize = Math.min(Math.max(3, Math.round(settings.gridSize)), this.config.maxGridSize);
     if (targetGridSize !== this.config.gridSize) {
       this.config.gridSize = targetGridSize;
       this.cubeField.rebuild(this.config.gridSize);
-      this.updateBillboard(null, false);
+      this.refreshAutoSequence();
+      this.updateBillboard(null, { animate: false, reason: 'system' });
       this.refreshAxisAnchors();
     }
 
     this.config.waveSpeed = settings.waveSpeed;
+    this.config.wavePositionEnabled = settings.wavePositionEnabled;
+    this.config.waveRotationEnabled = settings.waveRotationEnabled;
     this.config.waveAmplitudeY = settings.waveAmplitudeY;
+    this.config.waveFrequencyY = settings.waveFrequencyY;
+    this.config.wavePhaseSpread = settings.wavePhaseSpread;
     this.config.waveAmplitudeRot = settings.waveAmplitudeRot;
+    this.config.waveFrequencyRot = settings.waveFrequencyRot;
     this.config.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
     this.config.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
     this.hoverInteractionEnabled = settings.enableHoverInteraction;
@@ -891,6 +1302,19 @@ export class CubeWallPresenter {
     this.config.camera.relativeLookAtOffset.z = settings.cameraRelativeLookAtOffsetZ;
     this.config.camera.autoOrbitEnabled = settings.cameraAutoOrbitEnabled;
     this.config.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
+    this.config.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
+    this.config.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
+    this.config.geometryMode = settings.geometryMode;
+    this.config.tileDepth = settings.tileDepth;
+    this.config.tileAspectMode = settings.tileAspectMode;
+    this.config.baseOrientation = settings.baseOrientation;
+    this.config.tiles.captionsEnabled = settings.tileCaptionsEnabled;
+    this.config.tiles.text.tileWidth = settings.textTileWidth;
+    this.config.tiles.text.verticalGap = settings.textTileVerticalGap;
+    this.config.tiles.text.glassAlpha = settings.textTileGlassAlpha;
+    this.config.masonry.columnCount = Math.max(1, Math.round(settings.masonryColumnCount));
+    this.config.masonry.columnSpacing = settings.masonryColumnSpacing;
+    this.config.masonry.rowSpacing = settings.masonryRowSpacing;
     this.config.ambientLightIntensity = settings.ambientLightIntensity;
     this.config.ambientLightColorHex = settings.ambientLightColorHex;
     this.config.directionalLightIntensity = settings.directionalLightIntensity;
@@ -945,6 +1369,7 @@ export class CubeWallPresenter {
       this.axis3DLabelManager.update([], this.sceneController.getCamera().position);
     }
 
+    this.axisLabelsDirty = true;
     this.sceneController.updateLightingFromConfig();
     this.sceneController.updateBackgroundFromConfig();
     this.sceneController.updateDepthOfFieldFromConfig();
@@ -952,14 +1377,24 @@ export class CubeWallPresenter {
       this.updateDepthOfFieldFocus(null);
     }
     this.cameraController.applySettings(settings);
-    if (this.config.selectionCameraFollowEnabled && this.currentBillboardCell) {
+    if (
+      this.config.selectionCameraFollowEnabled &&
+      this.currentBillboardCell &&
+      !this.cameraController.isManualOverrideActive() &&
+      !this.suppressNextSettingsCameraSnap
+    ) {
       const anchor = this.currentBillboardCell.mesh.getAbsolutePosition().clone();
+      const normal =
+        this.currentSelectionNormalWorld ??
+        this.cubeField.getLiftNormalWorld(this.currentBillboardCell);
       this.cameraController.focusOnTarget(anchor, {
         mode: this.config.camera.orbitMode,
         animate: false,
         followMode: this.config.camera.followMode,
+        normal,
       });
     }
+    this.suppressNextSettingsCameraSnap = false;
     this.cubeField.updateTextureUvLayout({
       layout: settings.textureUvLayout,
       sidePattern,
@@ -967,11 +1402,46 @@ export class CubeWallPresenter {
     });
     this.emitHtmlBillboardState();
     this.emitAxisLabelsState();
+
+    if (
+      previousGeometryMode !== this.config.geometryMode ||
+      previousTileDepth !== this.config.tileDepth ||
+      previousTileAspectMode !== this.config.tileAspectMode ||
+      previousOrientation !== this.config.baseOrientation
+    ) {
+      this.cubeField.applyGeometrySettings();
+    }
+
+    if (
+      previousWavePosition !== this.config.wavePositionEnabled ||
+      previousWaveRotation !== this.config.waveRotationEnabled
+    ) {
+      this.cubeField.requestLayoutRefresh();
+    }
+
+    if (
+      this.config.geometryMode === 'tile' &&
+      (previousGeometryMode !== this.config.geometryMode ||
+        previousTileCaptions !== this.config.tiles.captionsEnabled) &&
+      this.contentItems.length > 0
+    ) {
+      const snapshot = this.contentOptionsSnapshot
+        ? {
+            ...this.contentOptionsSnapshot,
+            layout: this.contentOptionsSnapshot.layout ? { ...this.contentOptionsSnapshot.layout } : undefined,
+          }
+        : undefined;
+      void this.setContent(this.contentItems.slice(), snapshot);
+    }
   }
 
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.wheelListener) {
+      this.canvasElement.removeEventListener('wheel', this.wheelListener);
+      this.wheelListener = null;
+    }
     this.disposeHtmlConnectorResources();
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
@@ -986,40 +1456,18 @@ export class CubeWallPresenter {
     if (this.autoSelectElapsed < this.autoSelectInterval) return;
     this.autoSelectElapsed = 0;
 
-    let cell = this.cubeField.getRandomCell(true);
-    if (!cell) return;
-
-    if (cell.isSelected) {
-      const fallback = this.cubeField.getRandomCell(false);
-      if (fallback) {
-        cell = fallback;
-      }
+    let cell = this.getNextAutoSequenceCell();
+    if (!cell) {
+      cell = this.cubeField.getRandomCell(true);
     }
+    if (!cell || cell.isSelected) return;
 
-    if (cell.isSelected) return;
-
-    this.cubeField.selectCell(cell);
-    if (this.hoverInteractionEnabled) {
-      this.cubeField.triggerRipple(cell);
-    }
-    this.updateBillboard(cell);
-    this.updateDepthOfFieldFocus(cell);
-    if (this.config.selectionCameraFollowEnabled) {
-      if (this.cameraController.isManualOverrideActive()) {
-        this.setManualCameraOverride(false);
-      }
-      const anchor = cell.mesh.getAbsolutePosition().clone();
-      this.cameraController.focusOnTarget(anchor, {
-        mode: this.config.camera.orbitMode,
-        animate: true,
-        followMode: this.config.camera.followMode,
-      });
-    }
+    this.performAutoSelection(cell);
   }
 
   private readonly handleHtmlBillboardClose = () => {
     this.cubeField.selectCell(null);
-    this.updateBillboard(null);
+    this.updateBillboard(null, { reason: 'manual' });
   };
 
   private emitHtmlBillboardState(): void {
@@ -1027,6 +1475,7 @@ export class CubeWallPresenter {
     if (this.config.billboard.mode !== 'html' || !this.currentBillboardCell || !this.currentBillboardInfo) {
       this.billboardStateChange(null);
       this.hideHtmlConnectorLine();
+      this.lastEmittedBillboard = null;
       return;
     }
 
@@ -1075,6 +1524,7 @@ export class CubeWallPresenter {
       cubeScreenX,
       cubeScreenY,
       frameId: this.billboardFrameId++,
+      contentVersion: this.billboardContentVersion,
       content: {
         gridX: this.currentBillboardInfo.gridX,
         gridZ: this.currentBillboardInfo.gridZ,
@@ -1085,19 +1535,79 @@ export class CubeWallPresenter {
       onRequestClose: this.handleHtmlBillboardClose,
     };
 
-    this.billboardStateChange(state);
+    const last = this.lastEmittedBillboard;
+    const unchanged =
+      last &&
+      last.content?.gridX === state.content?.gridX &&
+      last.content?.gridZ === state.content?.gridZ &&
+      last.contentVersion === state.contentVersion &&
+      last.isVisible === state.isVisible &&
+      Math.abs(last.screenX - state.screenX) < 0.5 &&
+      Math.abs(last.screenY - state.screenY) < 0.5 &&
+      Math.abs(last.cubeScreenX - state.cubeScreenX) < 0.5 &&
+      Math.abs(last.cubeScreenY - state.cubeScreenY) < 0.5 &&
+      last.viewportWidth === state.viewportWidth &&
+      last.viewportHeight === state.viewportHeight;
+
+    if (!unchanged) {
+      const emittedState = cloneBillboardState(state);
+      this.lastEmittedBillboard = emittedState;
+      this.billboardStateChange(emittedState);
+    }
     this.updateHtmlConnectorLine(state, cubeAnchor, attachmentWorld, rect);
   }
 
   private hideHtmlConnectorLine(): void {
+    this.setConnectorTargetAlpha(0);
+  }
+
+  private setConnectorTargetAlpha(target: number): void {
+    const clamped = Math.min(Math.max(target, 0), 1);
+    this.connectorTargetAlpha = clamped;
+    if (clamped === 0 && this.connectorCurrentAlpha === 0) {
+      this.applyConnectorAlpha();
+    }
+  }
+
+  private applyConnectorAlpha(): void {
+    const alpha = Math.min(Math.max(this.connectorCurrentAlpha, 0), 1);
+    if (this.htmlConnectorMaterial) {
+      this.htmlConnectorMaterial.setFloat('opacity', alpha);
+    }
+    if (this.htmlConnectorTubeMaterial) {
+      this.htmlConnectorTubeMaterial.alpha = alpha;
+      this.htmlConnectorTubeMaterial.diffuseColor.copyFrom(this.htmlConnectorColor);
+      this.htmlConnectorTubeMaterial.emissiveColor.copyFrom(this.htmlConnectorColor);
+      this.htmlConnectorTubeMaterial.emissiveColor.scaleInPlace(Math.max(alpha, 0) * 0.8);
+    }
+    const visible = alpha > 0.002;
     if (this.htmlConnectorMesh) {
-      this.htmlConnectorMesh.isVisible = false;
-      this.htmlConnectorMesh.setEnabled(false);
+      this.htmlConnectorMesh.isVisible = visible;
+      this.htmlConnectorMesh.setEnabled(visible);
     }
     if (this.htmlConnectorTube) {
-      this.htmlConnectorTube.isVisible = false;
-      this.htmlConnectorTube.setEnabled(false);
+      this.htmlConnectorTube.visibility = alpha;
+      this.htmlConnectorTube.isVisible = visible;
+      this.htmlConnectorTube.setEnabled(visible);
     }
+  }
+
+  private updateConnectorFade(deltaTime: number): void {
+    if (!this.htmlConnectorMesh && !this.htmlConnectorTube) {
+      this.connectorCurrentAlpha = 0;
+      this.connectorTargetAlpha = 0;
+      return;
+    }
+    const diff = this.connectorTargetAlpha - this.connectorCurrentAlpha;
+    if (Math.abs(diff) < 1e-4) {
+      this.connectorCurrentAlpha = this.connectorTargetAlpha;
+      this.applyConnectorAlpha();
+      return;
+    }
+    const step = (this.connectorFadeSpeed * deltaTime);
+    const delta = Math.sign(diff) * Math.min(Math.abs(diff), step);
+    this.connectorCurrentAlpha = Math.min(Math.max(this.connectorCurrentAlpha + delta, 0), 1);
+    this.applyConnectorAlpha();
   }
 
   private disposeHtmlConnectorResources(): void {
@@ -1109,6 +1619,8 @@ export class CubeWallPresenter {
     this.htmlConnectorTube = null;
     this.htmlConnectorTubeMaterial?.dispose();
     this.htmlConnectorTubeMaterial = null;
+    this.connectorCurrentAlpha = 0;
+    this.connectorTargetAlpha = 0;
   }
 
   private ensureHtmlConnectorMesh(): Mesh {
@@ -1135,7 +1647,7 @@ export class CubeWallPresenter {
       CONNECTOR_SHADER_NAME,
       {
         attributes: ['position'],
-        uniforms: ['world', 'view', 'projection', 'start', 'end', 'radius', 'feather', 'color', 'cameraPosition'],
+        uniforms: ['world', 'view', 'projection', 'start', 'end', 'radius', 'feather', 'color', 'cameraPosition', 'opacity'],
       },
     );
     this.htmlConnectorMaterial.backFaceCulling = false;
@@ -1147,14 +1659,16 @@ export class CubeWallPresenter {
     this.htmlConnectorMaterial.separateCullingPass = false;
     this.htmlConnectorMaterial.setColor3('color', this.htmlConnectorColor);
     this.htmlConnectorMaterial.setFloat('feather', 0.2);
+    this.htmlConnectorMaterial.setFloat('opacity', this.connectorCurrentAlpha);
 
     mesh.material = this.htmlConnectorMaterial;
     mesh.isPickable = false;
     mesh.doNotSyncBoundingInfo = true;
     mesh.alwaysSelectAsActiveMesh = true;
     mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? 0;
-    mesh.isVisible = false;
-    mesh.setEnabled(false);
+    const visible = this.connectorCurrentAlpha > 0.001;
+    mesh.isVisible = visible;
+    mesh.setEnabled(visible);
 
     this.htmlConnectorMesh = mesh;
     return mesh;
@@ -1185,8 +1699,14 @@ export class CubeWallPresenter {
     this.htmlConnectorTubeMaterial.diffuseColor = this.htmlConnectorColor.clone();
     this.htmlConnectorTubeMaterial.emissiveColor = this.htmlConnectorColor.clone().scale(0.8);
     this.htmlConnectorTubeMaterial.specularColor = Color3.Black();
-    this.htmlConnectorTubeMaterial.alpha = 1;
+    this.htmlConnectorTubeMaterial.alpha = this.connectorCurrentAlpha;
     this.htmlConnectorTubeMaterial.backFaceCulling = false;
+    this.htmlConnectorTubeMaterial.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    this.htmlConnectorTubeMaterial.alphaMode = Engine.ALPHA_COMBINE;
+    this.htmlConnectorTubeMaterial.forceDepthWrite = false;
+    this.htmlConnectorTubeMaterial.needDepthPrePass = false;
+    this.htmlConnectorTubeMaterial.disableLighting = false;
+    this.htmlConnectorTubeMaterial.twoSidedLighting = true;
 
     mesh.material = this.htmlConnectorTubeMaterial;
 
@@ -1208,7 +1728,6 @@ export class CubeWallPresenter {
     const mesh = this.ensureHtmlConnectorMesh();
     mesh.renderingGroupId = this.currentBillboardCell?.mesh.renderingGroupId ?? mesh.renderingGroupId;
     mesh.setEnabled(true);
-    mesh.isVisible = true;
 
     if (this.htmlConnectorMaterial) {
       this.htmlConnectorMaterial.setVector3('start', startPoint.clone());
@@ -1218,6 +1737,7 @@ export class CubeWallPresenter {
       this.htmlConnectorMaterial.setColor3('color', this.htmlConnectorColor);
       this.htmlConnectorMaterial.setVector3('cameraPosition', camera.position.clone());
     }
+    this.applyConnectorAlpha();
   }
 
   private renderTubeConnector(startPoint: Vector3, endPoint: Vector3, radiusWorld: number): void {
@@ -1249,6 +1769,7 @@ export class CubeWallPresenter {
 
     tube.setEnabled(true);
     tube.isVisible = true;
+    this.applyConnectorAlpha();
   }
 
   private updateHtmlConnectorLine(
@@ -1283,6 +1804,8 @@ export class CubeWallPresenter {
       this.hideHtmlConnectorLine();
       return;
     }
+
+    this.setConnectorTargetAlpha(1);
 
     const CLAMP_MARGIN = 24;
     const clampedX = Math.min(Math.max(state.screenX, CLAMP_MARGIN), state.viewportWidth - CLAMP_MARGIN);
@@ -1320,7 +1843,31 @@ export class CubeWallPresenter {
       ? ray.origin.add(ray.direction.scale(hitDistance))
       : attachmentWorld.clone();
 
-    const startPoint = cubeAnchor.clone();
+    let startPoint = cubeAnchor.clone();
+    const activeCell = this.currentBillboardCell;
+    if (activeCell) {
+      const cameraRay = Ray.CreateNewFromTo(camera.position, cubeAnchor);
+      const pick = this.scene.pickWithRay(cameraRay, (mesh) => mesh === activeCell.mesh, false);
+      if (pick?.hit && pick.pickedPoint) {
+        startPoint = pick.pickedPoint.clone();
+      } else {
+        const boundingInfo = activeCell.mesh.getBoundingInfo();
+        const corners = boundingInfo?.boundingBox?.vectorsWorld;
+        if (corners && corners.length > 0) {
+          const cameraPos = camera.position;
+          let best = corners[0];
+          let bestDist = Number.POSITIVE_INFINITY;
+          corners.forEach((corner) => {
+            const dist = Vector3.DistanceSquared(corner, cameraPos);
+            if (Number.isFinite(dist) && dist < bestDist) {
+              bestDist = dist;
+              best = corner;
+            }
+          });
+          startPoint = best.clone();
+        }
+      }
+    }
     const direction = endPoint.subtract(startPoint);
     if (direction.lengthSquared() > 1e-6) {
       direction.normalize();
@@ -1365,14 +1912,22 @@ export class CubeWallPresenter {
   }
 
   private getAxisLabelAxes(): AxisLabelAxis[] {
+    const recommended = this.cubeField.getRecommendedAxisLabelAxes();
     const axes = this.config.axisLabels.axes;
     if (Array.isArray(axes) && axes.length > 0) {
       const normalized = axes
         .map((axis) => (axis === 'columns' ? 'columns' : 'rows'))
         .filter((axis, index, arr) => arr.indexOf(axis) === index) as AxisLabelAxis[];
-      if (normalized.length > 0) {
+      if (recommended.length === 0) {
         return normalized;
       }
+      const filtered = normalized.filter((axis) => recommended.includes(axis));
+      if (filtered.length > 0) {
+        return filtered;
+      }
+    }
+    if (recommended.length > 0) {
+      return recommended;
     }
     return ['rows'];
   }
@@ -1454,6 +2009,7 @@ export class CubeWallPresenter {
 
   private refreshAxisAnchors(): void {
     this.updateAxis3DLabels();
+    this.axisLabelsDirty = true;
   }
 
   private updateAxisLabelStartDate(): void {
@@ -1466,11 +2022,13 @@ export class CubeWallPresenter {
 
     if (!this.config.axisLabels.enabled || this.config.axisLabels.mode !== 'overlay') {
       this.axisLabelStateChange([]);
+      this.axisLabelsDirty = false;
       return;
     }
     const data = this.computeAxisLabelData();
     if (!data.length) {
       this.axisLabelStateChange([]);
+      this.axisLabelsDirty = false;
       return;
     }
 
@@ -1478,6 +2036,7 @@ export class CubeWallPresenter {
     const canvas = engine.getRenderingCanvas();
     if (!canvas) {
       this.axisLabelStateChange([]);
+      this.axisLabelsDirty = false;
       return;
     }
 
@@ -1508,6 +2067,7 @@ export class CubeWallPresenter {
     });
 
     this.axisLabelStateChange(labels);
+    this.axisLabelsDirty = false;
   }
 
   private updateAxis3DLabels(): void {

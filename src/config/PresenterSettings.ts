@@ -1,4 +1,10 @@
-import { appConfig } from './AppConfig';
+import {
+  appConfig,
+  type PhysicsSelectedRotationMode,
+  type GeometryMode,
+  type TileAspectMode,
+  type BaseOrientationMode,
+} from './AppConfig';
 import type {
   AxisLabelsMode,
   BackgroundType,
@@ -17,7 +23,13 @@ export interface PresenterSettings {
   textureUvLayout: TextureUvLayout;
   waveSpeed: number;
   waveAmplitudeY: number;
+  waveFrequencyY: number;
+  wavePhaseSpread: number;
   waveAmplitudeRot: number;
+  waveFrequencyRot: number;
+  wavePositionEnabled: boolean;
+  waveRotationEnabled: boolean;
+  selectionSpinEnabled: boolean;
   fieldAnimationSpeed: number;
   fieldGlobalScale: number;
   enableHoverInteraction: boolean;
@@ -63,6 +75,19 @@ export interface PresenterSettings {
   cameraRelativeLookAtOffsetZ: number;
   cameraAutoOrbitEnabled: boolean;
   cameraAutoOrbitSpeed: number;
+  physicsSelectedRotationMode: PhysicsSelectedRotationMode;
+  physicsSelectedRotationSpeed: number;
+  geometryMode: GeometryMode;
+  tileDepth: number;
+  tileAspectMode: TileAspectMode;
+  baseOrientation: BaseOrientationMode;
+  tileCaptionsEnabled: boolean;
+  textTileWidth: number;
+  textTileVerticalGap: number;
+  textTileGlassAlpha: number;
+  masonryColumnCount: number;
+  masonryColumnSpacing: number;
+  masonryRowSpacing: number;
   ambientLightIntensity: number;
   ambientLightColorHex: string;
   directionalLightIntensity: number;
@@ -105,7 +130,13 @@ export const defaultPresenterSettings: PresenterSettings = {
   textureUvLayout: appConfig.textureUvLayout,
   waveSpeed: appConfig.waveSpeed,
   waveAmplitudeY: appConfig.waveAmplitudeY,
+  waveFrequencyY: appConfig.waveFrequencyY,
+  wavePhaseSpread: appConfig.wavePhaseSpread,
   waveAmplitudeRot: appConfig.waveAmplitudeRot,
+  waveFrequencyRot: appConfig.waveFrequencyRot,
+  wavePositionEnabled: appConfig.wavePositionEnabled,
+  waveRotationEnabled: appConfig.waveRotationEnabled,
+  selectionSpinEnabled: appConfig.selectionSpinEnabled,
   fieldAnimationSpeed: appConfig.fieldAnimationSpeed,
   fieldGlobalScale: appConfig.fieldGlobalScale,
   enableHoverInteraction: true,
@@ -151,6 +182,19 @@ export const defaultPresenterSettings: PresenterSettings = {
   cameraRelativeLookAtOffsetZ: appConfig.camera.relativeLookAtOffset.z,
   cameraAutoOrbitEnabled: appConfig.camera.autoOrbitEnabled,
   cameraAutoOrbitSpeed: appConfig.camera.autoOrbitSpeed,
+  physicsSelectedRotationMode: appConfig.physicsSelectedRotationMode,
+  physicsSelectedRotationSpeed: appConfig.physicsSelectedRotationSpeed,
+  geometryMode: appConfig.geometryMode,
+  tileDepth: appConfig.tileDepth,
+  tileAspectMode: appConfig.tileAspectMode,
+  baseOrientation: appConfig.baseOrientation,
+  tileCaptionsEnabled: appConfig.tiles.captionsEnabled,
+  textTileWidth: appConfig.tiles.text.tileWidth,
+  textTileVerticalGap: appConfig.tiles.text.verticalGap,
+  textTileGlassAlpha: appConfig.tiles.text.glassAlpha,
+  masonryColumnCount: appConfig.masonry.columnCount,
+  masonryColumnSpacing: appConfig.masonry.columnSpacing,
+  masonryRowSpacing: appConfig.masonry.rowSpacing,
   ambientLightIntensity: appConfig.ambientLightIntensity,
   ambientLightColorHex: appConfig.ambientLightColorHex,
   directionalLightIntensity: appConfig.directionalLightIntensity,

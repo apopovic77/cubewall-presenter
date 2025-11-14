@@ -2,14 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CanvasStage } from './components/CanvasStage';
 import { SelectionOverlay } from './components/SelectionOverlay';
 import { DebugOverlay } from './components/DebugOverlay';
-import { HtmlBillboard } from './components/HtmlBillboard';
+import { HtmlBillboard } from './components/HtmlBillboard.tsx';
 import { AxisLabelsOverlay } from './components/AxisLabelsOverlay';
 import { SettingsPanel } from './components/SettingsPanel';
+import { KeymapOverlay } from './components/KeymapOverlay';
 import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
-import { appConfig, type CubeLayoutConfig, type TextureUvLayout, type AxisLabelsMode, type AxisLabelAxis } from './config/AppConfig';
+import {
+  appConfig,
+  type CubeLayoutConfig,
+  type TextureUvLayout,
+  type AxisLabelsMode,
+  type AxisLabelAxis,
+  type GeometryMode,
+} from './config/AppConfig';
 import type { AxisLabelDisplayState, BillboardDisplayState, BillboardScreenMetrics } from './engine/CubeWallPresenter';
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
@@ -26,6 +34,10 @@ const LEGACY_BILLBOARD_MARKERS = [
 
 const MATRIX_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> = {
   mode: 'matrix',
+};
+
+const MASONRY_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> = {
+  mode: 'masonry',
 };
 
 const AXIS_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> = {
@@ -61,7 +73,10 @@ function sanitizeSettings(raw: unknown): PresenterSettings {
   if (!raw || typeof raw !== 'object') {
     return { ...defaultPresenterSettings };
   }
-  const partial = raw as Partial<PresenterSettings>;
+  const partial = raw as Partial<PresenterSettings> & {
+    cubeOrientation?: PresenterSettings['baseOrientation'];
+    tileOrientation?: PresenterSettings['baseOrientation'];
+  };
   const sanitized = { ...defaultPresenterSettings } as PresenterSettings;
   const writable = sanitized as unknown as Record<string, unknown>;
   (Object.keys(defaultPresenterSettings) as (keyof PresenterSettings)[]).forEach((key) => {
@@ -70,6 +85,12 @@ function sanitizeSettings(raw: unknown): PresenterSettings {
       writable[key as string] = value;
     }
   });
+  if (partial.cubeOrientation || partial.tileOrientation) {
+    const legacy = partial.tileOrientation ?? partial.cubeOrientation;
+    if (legacy === 'upright' || legacy === 'frontUp') {
+      sanitized.baseOrientation = legacy;
+    }
+  }
   if (Math.abs(sanitized.selectedCubeRotation - Math.PI / 4) < 1e-6) {
     sanitized.selectedCubeRotation = Math.PI / 2;
   }
@@ -127,6 +148,56 @@ interface InitialSettingsResult {
   fromServer: boolean;
 }
 
+function nearlyEqual(a: number, b: number, epsilon = 0.5): boolean {
+  return Math.abs(a - b) <= epsilon;
+}
+
+function shallowEqualBillboard(
+  a: BillboardDisplayState | null,
+  b: BillboardDisplayState | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.contentVersion !== b.contentVersion || a.isVisible !== b.isVisible) {
+    return false;
+  }
+  if (
+    !nearlyEqual(a.screenX, b.screenX) ||
+    !nearlyEqual(a.screenY, b.screenY) ||
+    !nearlyEqual(a.cubeScreenX, b.cubeScreenX) ||
+    !nearlyEqual(a.cubeScreenY, b.cubeScreenY) ||
+    a.viewportWidth !== b.viewportWidth ||
+    a.viewportHeight !== b.viewportHeight
+  ) {
+    return false;
+  }
+  const ac = a.content;
+  const bc = b.content;
+  if (!ac && !bc) return true;
+  if (!ac || !bc) return false;
+  if (
+    ac.gridX !== bc.gridX ||
+    ac.gridZ !== bc.gridZ ||
+    ac.textureLabel !== bc.textureLabel ||
+    ac.item !== bc.item
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function cloneBillboardState(state: BillboardDisplayState | null): BillboardDisplayState | null {
+  if (!state) return null;
+  return {
+    ...state,
+    content: state.content
+      ? {
+          ...state.content,
+        }
+      : null,
+  };
+}
+
 async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
   if (ENABLE_SERVER_SETTINGS) {
     const serverSettings = await loadServerSettings();
@@ -149,8 +220,13 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.textureSidePattern = sidePattern;
   appConfig.textureMirrorTopBottom = mirrorTopBottom;
   appConfig.waveSpeed = settings.waveSpeed;
+  appConfig.wavePositionEnabled = settings.wavePositionEnabled;
+  appConfig.waveRotationEnabled = settings.waveRotationEnabled;
   appConfig.waveAmplitudeY = settings.waveAmplitudeY;
+  appConfig.waveFrequencyY = settings.waveFrequencyY;
+  appConfig.wavePhaseSpread = settings.wavePhaseSpread;
   appConfig.waveAmplitudeRot = settings.waveAmplitudeRot;
+  appConfig.waveFrequencyRot = settings.waveFrequencyRot;
   appConfig.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
   appConfig.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
   appConfig.interactionRadius = settings.interactionRadius;
@@ -159,6 +235,7 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.selectedCubePopOutDistance = settings.selectedCubePopOutDistance;
   appConfig.selectedCubeLift = settings.selectedCubeLift;
   appConfig.selectedCubeNormalDirection = settings.selectedCubeNormalDirection;
+  appConfig.selectionSpinEnabled = settings.selectionSpinEnabled;
   appConfig.camera.radius = settings.cameraRadius;
   appConfig.camera.flyToRadiusFactor = settings.flyToRadiusFactor;
   appConfig.camera.lerpSpeedFactor = settings.cameraLerpSpeed;
@@ -180,6 +257,19 @@ function syncConfigWithSettings(settings: PresenterSettings): void {
   appConfig.camera.relativeLookAtOffset.z = settings.cameraRelativeLookAtOffsetZ;
   appConfig.camera.autoOrbitEnabled = settings.cameraAutoOrbitEnabled;
   appConfig.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
+  appConfig.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
+  appConfig.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
+  appConfig.geometryMode = settings.geometryMode;
+  appConfig.tileDepth = settings.tileDepth;
+  appConfig.tileAspectMode = settings.tileAspectMode;
+  appConfig.baseOrientation = settings.baseOrientation;
+  appConfig.tiles.captionsEnabled = settings.tileCaptionsEnabled;
+  appConfig.tiles.text.tileWidth = Math.max(0.2, settings.textTileWidth);
+  appConfig.tiles.text.verticalGap = Math.max(0, settings.textTileVerticalGap);
+  appConfig.tiles.text.glassAlpha = Math.min(Math.max(settings.textTileGlassAlpha, 0), 1);
+  appConfig.masonry.columnCount = Math.max(1, Math.round(settings.masonryColumnCount));
+  appConfig.masonry.columnSpacing = Math.max(0, settings.masonryColumnSpacing);
+  appConfig.masonry.rowSpacing = Math.max(0, settings.masonryRowSpacing);
   appConfig.ambientLightIntensity = settings.ambientLightIntensity;
   appConfig.ambientLightColorHex = settings.ambientLightColorHex;
   appConfig.directionalLightIntensity = settings.directionalLightIntensity;
@@ -245,6 +335,7 @@ export default function App() {
   const presenterRef = useRef<CubeWallPresenter | null>(null);
   const contentItemsRef = useRef<CubeContentItem[]>([]);
   const contentLayoutRef = useRef<Partial<CubeLayoutConfig> | null>(null);
+  const settingsRef = useRef<PresenterSettings | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const layoutOverrideRef = useRef<Partial<CubeLayoutConfig> | null>(null);
   const preloadDataRef = useRef(window.__cubewallPreload ?? null);
@@ -263,6 +354,7 @@ export default function App() {
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
   appConfig.useFallbackImages = enableBaseFallbackTextures;
+  const billboardStateRef = useRef<BillboardDisplayState | null>(null);
 
   const apiBaseUrl = useMemo(() => {
     const explicit = (import.meta.env.VITE_KORALMBAHN_API_URL as string | undefined)?.trim();
@@ -302,7 +394,7 @@ export default function App() {
   }, []);
 
   const applyContentToPresenter = useCallback(
-    (items: CubeContentItem[], providerLayout?: Partial<CubeLayoutConfig>) => {
+    async (items: CubeContentItem[], providerLayout?: Partial<CubeLayoutConfig>) => {
       console.info('[CubeWallInit] applyContentToPresenter', {
         items: items.length,
         presenterReady: Boolean(presenterRef.current),
@@ -314,14 +406,14 @@ export default function App() {
       }
 
       const provider = contentProviderId;
-      const currentSettings = settings ?? defaultPresenterSettings;
+      const currentSettings = settingsRef.current ?? defaultPresenterSettings;
       const { sidePattern, mirrorTopBottom } = mapUvLayout(currentSettings.textureUvLayout);
       const combinedLayoutOverrides: Partial<CubeLayoutConfig> = {
         ...(providerLayout ?? {}),
         ...(layoutOverrideRef.current ?? {}),
       };
 
-      presenter.setContent(items, {
+      await presenter.setContent(items, {
         repeatContent: provider === 'default',
         useFallbackTextures: enableBaseFallbackTextures && provider === 'default',
         useDynamicFallbacks: enableBaseFallbackTextures && provider === 'default' && enablePicsumFallbacks,
@@ -332,12 +424,7 @@ export default function App() {
       });
       console.info('[CubeWallInit] Content forwarded to presenter.');
     },
-    [
-      contentProviderId,
-      enableBaseFallbackTextures,
-      enablePicsumFallbacks,
-      settings,
-    ],
+    [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks],
   );
 
   const refreshContent = useCallback(async () => {
@@ -364,7 +451,7 @@ export default function App() {
       );
       if (payload.items.length > 0) {
         if (presenterRef.current) {
-          applyContentToPresenter(payload.items, payload.layout ?? undefined);
+      await applyContentToPresenter(payload.items, payload.layout ?? undefined);
         }
         setContentStatus('ready');
         console.info('[CubeWallInit] refreshContent succeeded with items.', { count: payload.items.length });
@@ -403,7 +490,7 @@ export default function App() {
       preloadDataRef.current = null;
       if (preload.items.length > 0) {
         if (presenterRef.current) {
-          applyContentToPresenter(preload.items, preload.layout ?? undefined);
+          void applyContentToPresenter(preload.items, preload.layout ?? undefined);
         } else {
           console.warn('[CubeWallInit] Presenter not ready yet while applying preload content.');
         }
@@ -442,9 +529,45 @@ export default function App() {
     setSelection(nextSelection);
   }, []);
 
-  const handleBillboardLayout = useCallback((metrics: BillboardScreenMetrics | null) => {
-    presenterRef.current?.updateBillboardScreenMetrics(metrics);
-  }, []);
+  const lastBillboardMetricsRef = useRef<BillboardScreenMetrics | null>(null);
+
+  const metricsNearlyEqual = useCallback(
+    (a: BillboardScreenMetrics | null, b: BillboardScreenMetrics | null): boolean => {
+      if (a === b) return true;
+      if (!a || !b) return false;
+      const threshold = 0.5;
+      return (
+        Math.abs(a.left - b.left) < threshold &&
+        Math.abs(a.top - b.top) < threshold &&
+        Math.abs(a.width - b.width) < threshold &&
+        Math.abs(a.height - b.height) < threshold &&
+        Math.abs(a.centerX - b.centerX) < threshold &&
+        Math.abs(a.centerY - b.centerY) < threshold
+      );
+    },
+    [],
+  );
+
+  const handleBillboardLayout = useCallback(
+    (metrics: BillboardScreenMetrics | null) => {
+      const prev = lastBillboardMetricsRef.current;
+      if (metricsNearlyEqual(prev, metrics)) {
+        return;
+      }
+      lastBillboardMetricsRef.current = metrics
+        ? {
+            left: metrics.left,
+            top: metrics.top,
+            width: metrics.width,
+            height: metrics.height,
+            centerX: metrics.centerX,
+            centerY: metrics.centerY,
+          }
+        : null;
+      presenterRef.current?.updateBillboardScreenMetrics(metrics);
+    },
+    [metricsNearlyEqual],
+  );
 
   useEffect(() => {
     if (!presenterRef.current) return;
@@ -467,7 +590,28 @@ export default function App() {
   }, [applyContentToPresenter]);
 
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
-    setSettings((prev) => (prev ? { ...prev, ...update } : prev));
+    const internalUpdate = update as Partial<PresenterSettings> & {
+      _internalAllowGeometryModeChange?: boolean;
+    };
+    setSettings((prev) => {
+      if (!prev) return prev;
+      if (
+        'geometryMode' in internalUpdate &&
+        internalUpdate.geometryMode &&
+        prev.geometryMode === 'tile' &&
+        internalUpdate.geometryMode !== 'tile' &&
+        !internalUpdate._internalAllowGeometryModeChange
+      ) {
+        const { _internalAllowGeometryModeChange, geometryMode: _ignored, ...rest } = internalUpdate;
+        console.warn(
+          '[CubeWallPresenter] Prevented external geometry mode change while tile captions are active.',
+          { attemptedMode: update.geometryMode },
+        );
+        return { ...prev, ...rest };
+      }
+      const { _internalAllowGeometryModeChange, ...rest } = internalUpdate;
+      return { ...prev, ...rest };
+    });
   }, []);
 
   const handleCaptureRelativeCamera = useCallback(() => {
@@ -476,8 +620,6 @@ export default function App() {
     const capture = presenter.captureCameraRelativeOffset();
     if (!capture) return;
     handleSettingsChange({
-      cameraOrbitMode: 'relativeOffset',
-      cameraFollowMode: 'continuous',
       cameraRelativeOffsetX: capture.offset.x,
       cameraRelativeOffsetY: capture.offset.y,
       cameraRelativeOffsetZ: capture.offset.z,
@@ -493,10 +635,121 @@ export default function App() {
     console.debug(`[CubeWallPresenter] ${line}`);
   }, []);
 
+  const toggleGeometryMode = useCallback(() => {
+    const currentGeometry = settingsRef.current?.geometryMode ?? appConfig.geometryMode;
+    const nextGeometry: GeometryMode = currentGeometry === 'tile' ? 'cube' : 'tile';
+    handleSettingsChange({
+      geometryMode: nextGeometry,
+      _internalAllowGeometryModeChange: true,
+    } as Partial<PresenterSettings>);
+    layoutOverrideRef.current = null;
+    setLayoutOverride(null);
+    console.info(
+      `[CubeWallPresenter] Geometry mode set to ${nextGeometry === 'tile' ? 'tile' : 'cube'} via shortcut.`,
+    );
+  }, [handleSettingsChange, setLayoutOverride]);
+
+  const applyLayoutPreset = useCallback(
+    (preset: Partial<CubeLayoutConfig>) => {
+      const previousMode =
+        layoutOverrideRef.current?.mode ??
+        contentLayoutRef.current?.mode ??
+        appConfig.layout.mode;
+      const nextMode = preset.mode ?? previousMode;
+
+      if (nextMode === 'axis') {
+        setSettings((prev) => {
+          if (!prev) return prev;
+          if (!axisLabelStateRef.current) {
+            axisLabelStateRef.current = {
+              enabled: prev.axisLabelsEnabled,
+              mode: prev.axisLabelsMode,
+              template: prev.axisLabelsTemplate,
+              axes: appConfig.axisLabels.axes ? [...appConfig.axisLabels.axes] : undefined,
+            };
+          }
+          return {
+            ...prev,
+            axisLabelsEnabled: true,
+            axisLabelsMode: 'overlay',
+            axisLabelsTemplate: '{{value}}',
+          };
+        });
+        appConfig.axisLabels.enabled = true;
+        appConfig.axisLabels.mode = 'overlay';
+        appConfig.axisLabels.template = '{{value}}';
+        appConfig.axisLabels.axes = ['rows'];
+      } else if (previousMode === 'axis') {
+        const previous = axisLabelStateRef.current;
+        setSettings((prev) => {
+          if (!prev) return prev;
+          if (!previous) {
+            return {
+              ...prev,
+              axisLabelsEnabled: defaultPresenterSettings.axisLabelsEnabled,
+              axisLabelsMode: defaultPresenterSettings.axisLabelsMode,
+              axisLabelsTemplate: defaultPresenterSettings.axisLabelsTemplate,
+            };
+          }
+          return {
+            ...prev,
+            axisLabelsEnabled: previous.enabled,
+            axisLabelsMode: previous.mode,
+            axisLabelsTemplate: previous.template,
+          };
+        });
+        if (previous) {
+          appConfig.axisLabels.enabled = previous.enabled;
+          appConfig.axisLabels.mode = previous.mode;
+          appConfig.axisLabels.template = previous.template;
+          appConfig.axisLabels.axes = previous.axes ?? ['rows'];
+        } else {
+          appConfig.axisLabels.enabled = defaultPresenterSettings.axisLabelsEnabled;
+          appConfig.axisLabels.mode = defaultPresenterSettings.axisLabelsMode;
+          appConfig.axisLabels.template = defaultPresenterSettings.axisLabelsTemplate;
+          appConfig.axisLabels.axes = ['rows'];
+        }
+        axisLabelStateRef.current = null;
+      }
+
+      const presetCopy: Partial<CubeLayoutConfig> = { ...preset };
+      if (presetCopy.mode === 'masonry') {
+        appConfig.masonry.columnCount = Math.max(
+          1,
+          Math.round(settingsRef.current?.masonryColumnCount ?? appConfig.masonry.columnCount),
+        );
+        if (settingsRef.current?.geometryMode !== 'tile') {
+          handleSettingsChange({
+            geometryMode: 'tile',
+            _internalAllowGeometryModeChange: true,
+          } as Partial<PresenterSettings>);
+        }
+      }
+      layoutOverrideRef.current = presetCopy;
+      setLayoutOverride(presetCopy);
+      if (presetCopy.mode) {
+        appConfig.layout.mode = presetCopy.mode;
+      }
+      presenterRef.current?.markAxisLabelsDirty();
+      if (presenterRef.current && contentItemsRef.current.length > 0) {
+        void applyContentToPresenter(
+          contentItemsRef.current,
+          contentLayoutRef.current ?? undefined,
+        );
+        if (presetCopy.mode === 'axis') {
+          presenterRef.current.debugAxisSummary();
+        }
+      }
+    },
+    [applyContentToPresenter, handleSettingsChange, setLayoutOverride],
+  );
+
   const handleRetryLoad = useCallback(() => {
     setContentStatus('loading');
     void refreshContent();
   }, [refreshContent]);
+
+  const prevGeometryModeRef = useRef<GeometryMode | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -507,6 +760,17 @@ export default function App() {
       void saveServerSettings(settings);
     }
     hasPersistedRef.current = true;
+
+    const prevGeometry = prevGeometryModeRef.current;
+    if (prevGeometry !== null && prevGeometry !== settings.geometryMode) {
+      if (presenterRef.current && contentItemsRef.current.length > 0) {
+        console.info(
+          `[CubeWallPresenter] Geometry mode changed ${prevGeometry} -> ${settings.geometryMode}, refreshing content.`,
+        );
+        void applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
+      }
+    }
+    prevGeometryModeRef.current = settings.geometryMode;
   }, [settings]);
 
   useEffect(() => {
@@ -520,6 +784,10 @@ export default function App() {
       setAxisLabels([]);
     }
   }, [settings?.axisLabelsMode]);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     layoutOverrideRef.current = layoutOverride;
@@ -548,6 +816,55 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === '1') {
+        event.preventDefault();
+        toggleGeometryMode();
+        return;
+      }
+      if (event.key === '2') {
+        event.preventDefault();
+        let nextWavePosition = false;
+        setSettings((prev) => {
+          if (!prev) return prev;
+          nextWavePosition = !prev.wavePositionEnabled;
+          return {
+            ...prev,
+            wavePositionEnabled: nextWavePosition,
+          };
+        });
+        console.info(
+          `[CubeWallPresenter] Wave motion ${nextWavePosition ? 'enabled' : 'disabled'} via shortcut.`,
+        );
+        return;
+      }
+      if (event.key === '3') {
+        event.preventDefault();
+        let nextWaveRotation = false;
+        setSettings((prev) => {
+          if (!prev) return prev;
+          nextWaveRotation = !prev.waveRotationEnabled;
+          return {
+            ...prev,
+            waveRotationEnabled: nextWaveRotation,
+          };
+        });
+        console.info(
+          `[CubeWallPresenter] Wave rotation ${nextWaveRotation ? 'enabled' : 'disabled'} via shortcut.`,
+        );
+        return;
+      }
+      if (event.key === '4') {
+        event.preventDefault();
+        console.debug('[CubeWallPresenter] Layout preset -> matrix (shortcut)');
+        applyLayoutPreset(MATRIX_LAYOUT_OVERRIDE);
+        return;
+      }
+      if (event.key === '5') {
+        event.preventDefault();
+        console.debug('[CubeWallPresenter] Layout preset -> masonry (shortcut)');
+        applyLayoutPreset(MASONRY_LAYOUT_OVERRIDE);
+        return;
+      }
       if (event.key === 'F1') {
         event.preventDefault();
         setIsSettingsOpen((prev) => !prev);
@@ -565,86 +882,109 @@ export default function App() {
           layoutOverrideRef.current?.mode ??
           contentLayoutRef.current?.mode ??
           appConfig.layout.mode;
-        const next =
-          currentMode === 'axis' ? MATRIX_LAYOUT_OVERRIDE : AXIS_LAYOUT_OVERRIDE;
+        const next = currentMode === 'axis' ? MATRIX_LAYOUT_OVERRIDE : AXIS_LAYOUT_OVERRIDE;
         console.debug(
           `[CubeWallPresenter] Layout toggle -> ${
             next.mode === 'axis' ? 'axis (rows by publishedDay)' : 'matrix (default)'
           }`,
         );
-        if (next.mode === 'axis') {
-          setSettings((prev) => {
-            if (!prev) return prev;
-            if (!axisLabelStateRef.current) {
-              axisLabelStateRef.current = {
-                enabled: prev.axisLabelsEnabled,
-                mode: prev.axisLabelsMode,
-                template: prev.axisLabelsTemplate,
-                axes: appConfig.axisLabels.axes ? [...appConfig.axisLabels.axes] : undefined,
-              };
-            }
-            return {
-              ...prev,
-              axisLabelsEnabled: true,
-              axisLabelsMode: 'overlay',
-              axisLabelsTemplate: '{{value}}',
-            };
-          });
-          appConfig.axisLabels.enabled = true;
-          appConfig.axisLabels.mode = 'overlay';
-          appConfig.axisLabels.template = '{{value}}';
-          appConfig.axisLabels.axes = ['rows'];
-        } else {
-          const previous = axisLabelStateRef.current;
-          setSettings((prev) => {
-            if (!prev) return prev;
-            if (!previous) {
-              return {
-                ...prev,
-                axisLabelsEnabled: defaultPresenterSettings.axisLabelsEnabled,
-                axisLabelsMode: defaultPresenterSettings.axisLabelsMode,
-                axisLabelsTemplate: defaultPresenterSettings.axisLabelsTemplate,
-              };
-            }
-            return {
-              ...prev,
-              axisLabelsEnabled: previous.enabled,
-              axisLabelsMode: previous.mode,
-              axisLabelsTemplate: previous.template,
-            };
-          });
-          if (previous) {
-            appConfig.axisLabels.enabled = previous.enabled;
-            appConfig.axisLabels.mode = previous.mode;
-            appConfig.axisLabels.template = previous.template;
-            appConfig.axisLabels.axes = previous.axes ?? ['rows'];
-          } else {
-            appConfig.axisLabels.enabled = defaultPresenterSettings.axisLabelsEnabled;
-            appConfig.axisLabels.mode = defaultPresenterSettings.axisLabelsMode;
-            appConfig.axisLabels.template = defaultPresenterSettings.axisLabelsTemplate;
-            appConfig.axisLabels.axes = ['rows'];
-          }
-          axisLabelStateRef.current = null;
-        }
-        layoutOverrideRef.current = next;
-        setLayoutOverride(next);
-        if (presenterRef.current && contentItemsRef.current.length > 0) {
-          void applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
-          presenterRef.current.debugAxisSummary();
-        }
+        applyLayoutPreset(next);
+        return;
       }
       if (event.key === 'F6') {
         event.preventDefault();
-        presenterRef.current?.randomizeFieldOrientation();
+        if (event.shiftKey || !appConfig.fieldSystemV2Enabled) {
+          presenterRef.current?.randomizeFieldOrientation();
+        } else {
+          presenterRef.current?.toggleFieldAutoRotation();
+        }
       }
       if (event.key === 'F7') {
         event.preventDefault();
         presenterRef.current?.startFieldMorph();
       }
+      if (event.key === 'F8') {
+        event.preventDefault();
+        presenterRef.current?.triggerLineWaveField();
+      }
+      if (event.key === 'F9') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          setSettings((prev) => {
+            if (!prev) return prev;
+            const defaults = defaultPresenterSettings;
+            const next: PresenterSettings = {
+              ...prev,
+              cameraOrbitMode: defaults.cameraOrbitMode,
+              cameraFollowMode: defaults.cameraFollowMode,
+              useCustomCamera: defaults.useCustomCamera,
+              cameraOffsetX: defaults.cameraOffsetX,
+              cameraOffsetY: defaults.cameraOffsetY,
+              cameraOffsetZ: defaults.cameraOffsetZ,
+              cameraLookAtOffsetX: defaults.cameraLookAtOffsetX,
+              cameraLookAtOffsetY: defaults.cameraLookAtOffsetY,
+              cameraLookAtOffsetZ: defaults.cameraLookAtOffsetZ,
+              cameraRelativeOffsetX: defaults.cameraRelativeOffsetX,
+              cameraRelativeOffsetY: defaults.cameraRelativeOffsetY,
+              cameraRelativeOffsetZ: defaults.cameraRelativeOffsetZ,
+              cameraRelativeLookAtOffsetX: defaults.cameraRelativeLookAtOffsetX,
+              cameraRelativeLookAtOffsetY: defaults.cameraRelativeLookAtOffsetY,
+              cameraRelativeLookAtOffsetZ: defaults.cameraRelativeLookAtOffsetZ,
+              cameraRadius: defaults.cameraRadius,
+              flyToRadiusFactor: defaults.flyToRadiusFactor,
+              cameraLerpSpeed: defaults.cameraLerpSpeed,
+              cameraAnimationSpeed: defaults.cameraAnimationSpeed,
+              cameraAutoOrbitEnabled: defaults.cameraAutoOrbitEnabled,
+              cameraAutoOrbitSpeed: defaults.cameraAutoOrbitSpeed,
+            };
+            queueMicrotask(() => {
+              presenterRef.current?.resetCameraToDefaults();
+              presenterRef.current?.selectNextCube(true);
+            });
+            return next;
+          });
+          return;
+        }
+        toggleGeometryMode();
+        return;
+      }
+      if (event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        presenterRef.current?.selectNextCube();
+        return;
+      }
+      if (event.key.toLowerCase() === 'm') {
+        event.preventDefault();
+        presenterRef.current?.selectRandomCube();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [applyLayoutPreset, toggleGeometryMode]);
+
+  const effectiveLayoutMode =
+    layoutOverride?.mode ??
+    contentLayoutRef.current?.mode ??
+    appConfig.layout.mode;
+  const geometryMode = settings?.geometryMode ?? defaultPresenterSettings.geometryMode;
+  const wavePositionEnabled =
+    settings?.wavePositionEnabled ?? defaultPresenterSettings.wavePositionEnabled;
+  const waveRotationEnabled =
+    settings?.waveRotationEnabled ?? defaultPresenterSettings.waveRotationEnabled;
+  const physicsActive = presenterRef.current?.isPhysicsActive?.() ?? false;
+
+  const handleBillboardStateChange = useCallback(
+    (next: BillboardDisplayState | null) => {
+      const prev = billboardStateRef.current;
+      if (shallowEqualBillboard(prev, next)) {
+        return;
+      }
+      const cloned = cloneBillboardState(next);
+      billboardStateRef.current = cloned;
+      setBillboardState(cloned);
+    },
+    [shallowEqualBillboard, cloneBillboardState],
+  );
 
   if (!settings) {
     return (
@@ -658,13 +998,21 @@ export default function App() {
 
   return (
     <div className="cw-root">
+      <KeymapOverlay
+        geometryMode={geometryMode}
+        wavePositionEnabled={wavePositionEnabled}
+        waveRotationEnabled={waveRotationEnabled}
+        layoutMode={effectiveLayoutMode ?? 'matrix'}
+        physicsActive={physicsActive}
+      />
       <CanvasStage
         onSelectionChange={handleSelectionChange}
         onPresenterReady={handlePresenterReady}
         settings={settings}
         onDebug={handleDebugLine}
-        onBillboardStateChange={setBillboardState}
+        onBillboardStateChange={handleBillboardStateChange}
         onAxisLabelsChange={setAxisLabels}
+        onCameraSettingsChange={handleSettingsChange}
       />
       {settings.billboardMode === 'html' && billboardState && (
         <HtmlBillboard state={billboardState} settings={settings} onLayout={handleBillboardLayout} />
@@ -730,7 +1078,7 @@ export default function App() {
                   }}
                 >
                   Erneut laden
-                </button>
+        </button>
                 <p style={{ fontSize: '12px', opacity: 0.55, marginTop: '16px' }}>{contentSummary}</p>
               </>
             )}

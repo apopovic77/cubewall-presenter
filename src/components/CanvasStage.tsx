@@ -12,9 +12,18 @@ export interface CanvasStageProps {
   onDebug?: (line: string) => void;
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
   onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
+  onCameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
 }
 
-export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onDebug, onBillboardStateChange, onAxisLabelsChange }: CanvasStageProps) {
+export function CanvasStage({
+  onSelectionChange,
+  onPresenterReady,
+  settings,
+  onDebug,
+  onBillboardStateChange,
+  onAxisLabelsChange,
+  onCameraSettingsChange,
+}: CanvasStageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const presenterRef = useRef<CubeWallPresenter | null>(null);
 
@@ -37,6 +46,7 @@ export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onD
       onDebug,
       onBillboardStateChange,
       onAxisLabelsChange,
+      onCameraSettingsChange,
     });
     presenter.applySettings(settings);
     presenterRef.current = presenter;
@@ -57,7 +67,7 @@ export function CanvasStage({ onSelectionChange, onPresenterReady, settings, onD
       onBillboardStateChange?.(null);
       onAxisLabelsChange?.([]);
     };
-  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange, onAxisLabelsChange]);
+  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange, onAxisLabelsChange, onCameraSettingsChange]);
 
   useEffect(() => {
     presenterRef.current?.applySettings(settings);

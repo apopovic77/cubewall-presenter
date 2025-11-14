@@ -6,18 +6,6 @@ function resolveSettingsEndpoint(): string {
     return explicitEndpoint;
   }
 
-  if (import.meta.env.DEV) {
-    return 'http://localhost:5001/settings';
-  }
-
-  if (typeof window !== 'undefined' && window.location) {
-    const { origin, hostname } = window.location;
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return 'https://cubewall.arkturian.com/settings';
-    }
-    return `${origin}/settings`;
-  }
-
   return 'https://cubewall.arkturian.com/settings';
 }
 

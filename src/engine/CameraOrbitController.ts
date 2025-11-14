@@ -8,16 +8,25 @@ interface CameraPose {
   target: Vector3;
 }
 
+interface RelativeBasis {
+  right: Vector3;
+  up: Vector3;
+  forward: Vector3;
+}
+
 interface FocusTarget {
   anchor: Vector3;
   lookAt: Vector3;
   mode: CameraFollowMode;
+  normal: Vector3;
+  basis: RelativeBasis;
 }
 
 interface FocusOptions {
   mode?: CameraOrbitMode;
   animate?: boolean;
   followMode?: CameraFollowMode;
+  normal?: Vector3;
 }
 
 const DEFAULT_DIRECTION = new Vector3(0, 0.35, -0.65);
@@ -45,6 +54,7 @@ export class CameraOrbitController {
   private currentFocus: FocusTarget | null = null;
   private manualOverride = false;
   private isAnimating = false;
+  public onFocusSettled?: (anchor: Vector3 | null) => void;
 
   constructor(camera: ArcRotateCamera, config: CubeWallConfig) {
     this.camera = camera;
@@ -112,17 +122,22 @@ export class CameraOrbitController {
 
   public focusOnTarget(target: Vector3, options: FocusOptions = {}): void {
     const mode = options.mode ?? this.orbitMode;
-    const pose = this.computePoseForTarget(target, mode);
+    const normal = this.resolveNormal(options.normal);
+    const basis = this.buildRelativeBasis(normal);
+    const pose = this.computePoseForTarget(target, mode, basis);
     const followMode = options.followMode ?? this.followMode;
     this.currentFocus = {
       anchor: target.clone(),
       lookAt: pose.target.clone(),
       mode: followMode,
+      normal,
+      basis,
     };
     this.targetPose = pose;
     if (options.animate === false) {
       this.applyPoseImmediately(pose);
       this.isAnimating = false;
+      this.notifyFocusSettled(target.clone());
     } else if (!this.manualOverride) {
       this.isAnimating = true;
     }
@@ -143,6 +158,7 @@ export class CameraOrbitController {
     if (!animate || this.manualOverride) {
       this.applyPoseImmediately(pose);
       this.isAnimating = false;
+      this.notifyFocusSettled(null);
     } else {
       this.isAnimating = true;
     }
@@ -169,19 +185,27 @@ export class CameraOrbitController {
 
   public captureCurrentCameraState(): void {
     const currentTarget = this.camera.target.clone();
+    const normal = this.resolveNormal(this.currentFocus?.normal);
     this.currentFocus = {
       anchor: currentTarget.clone(),
       lookAt: currentTarget.clone(),
       mode: this.followMode,
+      normal,
+      basis: this.buildRelativeBasis(normal),
     };
     this.targetPose = null;
     this.isAnimating = false;
+    this.notifyFocusSettled(currentTarget.clone());
   }
 
-  public captureRelativeOffset(anchor: Vector3): { offset: Vector3; lookAtOffset: Vector3 } {
+  public captureRelativeOffset(anchor: Vector3, normal?: Vector3): { offset: Vector3; lookAtOffset: Vector3 } {
+    const resolvedNormal = this.resolveNormal(normal ?? this.currentFocus?.normal);
+    const basis = this.buildRelativeBasis(resolvedNormal);
+    const positionOffset = this.camera.position.subtract(anchor);
+    const lookAtOffset = this.camera.target.subtract(anchor);
     return {
-      offset: this.camera.position.subtract(anchor).clone(),
-      lookAtOffset: this.camera.target.subtract(anchor).clone(),
+      offset: this.projectOntoBasis(positionOffset, basis),
+      lookAtOffset: this.projectOntoBasis(lookAtOffset, basis),
     };
   }
 
@@ -190,22 +214,28 @@ export class CameraOrbitController {
     this.targetPose = null;
   }
 
-  public updateContinuousTarget(anchor: Vector3): void {
+  public updateContinuousTarget(anchor: Vector3, normal?: Vector3): void {
     if (!this.currentFocus || this.currentFocus.mode !== 'continuous') {
       return;
     }
+    if (normal && normal.lengthSquared() > MIN_DISTANCE_SQ) {
+      const resolvedNormal = this.resolveNormal(normal);
+      this.currentFocus.normal.copyFrom(resolvedNormal);
+      this.currentFocus.basis = this.buildRelativeBasis(resolvedNormal);
+    }
+    const basis = this.currentFocus.basis;
     this.currentFocus.anchor.copyFrom(anchor);
     if (this.manualOverride) {
       return;
     }
-    const pose = this.computePoseForTarget(anchor, this.orbitMode);
+    const pose = this.computePoseForTarget(anchor, this.orbitMode, basis);
     if (!this.targetPose) {
       this.applyPoseImmediately(pose);
       this.targetPose = pose;
       this.isAnimating = false;
       return;
     }
-    this.currentFocus.lookAt = pose.target.clone();
+    this.currentFocus.lookAt.copyFrom(pose.target);
     this.targetPose = pose;
     this.isAnimating = true;
   }
@@ -228,6 +258,8 @@ export class CameraOrbitController {
         this.applyPoseImmediately(this.targetPose);
         this.isAnimating = false;
         this.targetPose = null;
+        const anchor = this.currentFocus?.anchor?.clone() ?? null;
+        this.notifyFocusSettled(anchor);
       }
     } else if (this.autoOrbitEnabled && this.currentFocus) {
       this.applyAutoOrbit(deltaTime);
@@ -238,11 +270,12 @@ export class CameraOrbitController {
     return this.followMode;
   }
 
-  private computePoseForTarget(target: Vector3, mode: CameraOrbitMode): CameraPose {
+  private computePoseForTarget(target: Vector3, mode: CameraOrbitMode, basis?: RelativeBasis): CameraPose {
     if (mode === 'relativeOffset') {
+      const resolvedBasis = basis ?? this.buildRelativeBasis(this.resolveNormal(this.currentFocus?.normal));
       return {
-        position: target.clone().addInPlace(this.relativeOffset),
-        target: target.clone().addInPlace(this.relativeLookAtOffset),
+        position: this.composeOffset(target, this.relativeOffset, resolvedBasis),
+        target: this.composeOffset(target, this.relativeLookAtOffset, resolvedBasis),
       };
     }
 
@@ -273,15 +306,25 @@ export class CameraOrbitController {
 
   private applyAutoOrbit(deltaTime: number): void {
     if (!this.currentFocus) return;
-    const pivot = this.currentFocus.lookAt.clone();
-    const offset = this.camera.position.subtract(pivot);
+    const focusPoint = this.currentFocus.lookAt.clone();
+    const offset = this.camera.position.subtract(focusPoint);
     if (offset.lengthSquared() < MIN_DISTANCE_SQ) {
       return;
     }
-    const rotation = Matrix.RotationY(this.autoOrbitSpeed * deltaTime);
-    const rotated = Vector3.TransformCoordinates(offset, rotation);
-    this.camera.position.copyFrom(pivot.add(rotated));
-    this.camera.setTarget(pivot);
+    const axis = this.currentFocus.normal.clone();
+    if (axis.lengthSquared() < MIN_DISTANCE_SQ) {
+      axis.copyFrom(Vector3.UpReadOnly);
+    }
+    axis.normalize();
+    const rotation = Matrix.RotationAxis(axis, this.autoOrbitSpeed * deltaTime);
+    const rotatedOffset = Vector3.TransformCoordinates(offset, rotation);
+    const lookOffset = this.camera.target.subtract(focusPoint);
+    const rotatedLook = Vector3.TransformCoordinates(lookOffset, rotation);
+    const newPosition = focusPoint.clone().add(rotatedOffset);
+    const newTarget = focusPoint.clone().add(rotatedLook);
+    this.camera.position.copyFrom(newPosition);
+    this.camera.setTarget(newTarget);
+    this.currentFocus.lookAt.copyFrom(newTarget);
     this.syncRadiusWithPosition();
   }
 
@@ -296,6 +339,73 @@ export class CameraOrbitController {
     if (Number.isFinite(radius)) {
       this.camera.radius = radius;
     }
+  }
+
+  private notifyFocusSettled(anchor: Vector3 | null): void {
+    this.onFocusSettled?.(anchor);
+  }
+
+  private resolveNormal(normal?: Vector3 | null): Vector3 {
+    if (normal && normal.lengthSquared() > MIN_DISTANCE_SQ) {
+      const clone = normal.clone();
+      clone.normalize();
+      return clone;
+    }
+    const configNormal = new Vector3(
+      this.config.gridPlane.normal.x,
+      this.config.gridPlane.normal.y,
+      this.config.gridPlane.normal.z,
+    );
+    if (configNormal.lengthSquared() < MIN_DISTANCE_SQ) {
+      configNormal.copyFrom(Vector3.UpReadOnly);
+    }
+    configNormal.normalize();
+    return configNormal;
+  }
+
+  private buildRelativeBasis(normal: Vector3): RelativeBasis {
+    const up = this.resolveNormal(normal);
+    let reference: Vector3;
+    if (Math.abs(Vector3.Dot(up, Vector3.UpReadOnly)) > 0.95) {
+      reference = new Vector3(0, 0, 1);
+    } else {
+      reference = new Vector3(0, 1, 0);
+    }
+    let right = Vector3.Cross(reference, up);
+    if (right.lengthSquared() < MIN_DISTANCE_SQ) {
+      reference = new Vector3(1, 0, 0);
+      right = Vector3.Cross(reference, up);
+    }
+    right.normalize();
+    let forward = Vector3.Cross(up, right);
+    if (forward.lengthSquared() < MIN_DISTANCE_SQ) {
+      forward = Vector3.Cross(up, new Vector3(0, 0, 1));
+      if (forward.lengthSquared() < MIN_DISTANCE_SQ) {
+        forward = new Vector3(1, 0, 0);
+      }
+    }
+    forward.normalize();
+    return {
+      right,
+      up,
+      forward,
+    };
+  }
+
+  private composeOffset(anchor: Vector3, offset: Vector3, basis: RelativeBasis): Vector3 {
+    const result = anchor.clone();
+    result.addInPlace(basis.right.clone().scale(offset.x));
+    result.addInPlace(basis.up.clone().scale(offset.y));
+    result.addInPlace(basis.forward.clone().scale(offset.z));
+    return result;
+  }
+
+  private projectOntoBasis(vector: Vector3, basis: RelativeBasis): Vector3 {
+    return new Vector3(
+      Vector3.Dot(vector, basis.right),
+      Vector3.Dot(vector, basis.up),
+      Vector3.Dot(vector, basis.forward),
+    );
   }
 }
 

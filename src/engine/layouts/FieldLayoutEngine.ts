@@ -1,4 +1,5 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import type { TileDescriptor, TileFootprint } from '../tiles/TileTypes';
 
 export interface FieldContext {
   totalCount: number;
@@ -9,6 +10,11 @@ export interface FieldContext {
   waveFrequencyY: number;
   wavePhaseSpread: number;
   globalScale: number;
+  tileFootprints?: TileFootprint[];
+  tileDescriptors?: TileDescriptor[];
+  masonryColumnCount?: number;
+  masonryColumnSpacing?: number;
+  masonryRowSpacing?: number;
 }
 
 export interface FieldDefinition {
@@ -63,6 +69,10 @@ export class FieldLayoutEngine {
     return this.fields.length;
   }
 
+  public findFieldIndex(id: string): number {
+    return this.fields.findIndex((field) => field.id === id);
+  }
+
   public setContext(patch: Partial<FieldContext>): void {
     this.context = { ...this.context, ...patch };
   }
@@ -107,6 +117,13 @@ export class FieldLayoutEngine {
 
   public getCurrentFieldIndex(): number {
     return this.currentIndex;
+  }
+
+  public resetMorph(): void {
+    this.morphing = false;
+    this.morphProgress = 0;
+    this.morphElapsed = 0;
+    this.nextIndex = this.currentIndex;
   }
 
   public sampleAll(total: number, time: number): Vector3[] {
