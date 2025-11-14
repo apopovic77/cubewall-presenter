@@ -2108,7 +2108,7 @@ export class CubeField {
 
   private updatePhysicsDrivenCubes(deltaTime: number): void {
     const lerpSpeed = this.config.interactionLerpSpeed * Math.min(1, deltaTime * 60);
-    const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 1.25);
+    const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 0.6);
     const autorotate = this.config.slowAutorotateSpeed * deltaTime;
 
     const rootWorld = this.root.getWorldMatrix();
@@ -2140,10 +2140,16 @@ export class CubeField {
         return;
       }
 
-      cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 3);
-      this.setCubeMotionType(cube, PhysicsMotionType.ANIMATED);
+      cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 2);
+      const body = cube.physicsAggregate?.body;
+      if (!body || body.isDisposed) return;
+
       if (!cube.liftAnchor) {
         cube.liftAnchor = cube.mesh.position.clone();
+        cube.mesh.physicsImpostor?.setLinearVelocity(Vector3.Zero());
+        body.setLinearVelocity(Vector3.Zero());
+        body.setAngularVelocity(Vector3.Zero());
+        cube.currentPosition.copyFrom(cube.mesh.position);
       }
 
       const selectionEased = easeOutCubic(cube.selectionProgress);
@@ -2151,38 +2157,32 @@ export class CubeField {
       const targetOffset = physicsUpLocal.scale(lift * selectionEased);
       const targetPosition = anchor.add(targetOffset);
 
-      Vector3.LerpToRef(cube.currentPosition, targetPosition, lerpSpeed, cube.currentPosition);
+      const toTarget = targetPosition.subtract(cube.currentPosition);
+      const distance = toTarget.length();
+      if (distance > 1e-4) {
+        const desiredVelocity = toTarget.normalize().scale(this.config.interactionLift * 1.25);
+        body.setMotionType(PhysicsMotionType.DYNAMIC);
+        body.setLinearVelocity(desiredVelocity);
+      } else {
+        cube.selectionProgress = 1;
+        body.setLinearVelocity(Vector3.Zero());
+      }
 
       cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, 0, lerpSpeed);
       cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, 0, lerpSpeed);
 
       const rotationMode = this.config.physicsSelectedRotationMode ?? 'static';
-      let targetYRotation = 0;
       if (rotationMode === 'animated') {
         cube.physicsSpinAngle += (this.config.physicsSelectedRotationSpeed ?? 0) * deltaTime;
-        targetYRotation = cube.physicsSpinAngle * selectionEased;
       } else {
         cube.physicsSpinAngle = 0;
-        targetYRotation = 0;
       }
-
+      const targetYRotation =
+        rotationMode === 'animated' ? cube.physicsSpinAngle * selectionEased : 0;
       const newY = Scalar.Lerp(cube.currentRotation.y, targetYRotation, lerpSpeed);
       cube.currentRotation.y = this.config.slowAutorotateEnabled ? newY + autorotate : newY;
 
-      cube.mesh.position.copyFrom(cube.currentPosition);
-      cube.mesh.rotation.set(cube.currentRotation.x, cube.currentRotation.y, cube.currentRotation.z);
-
-      const body = cube.physicsAggregate?.body;
-      if (body && !body.isDisposed) {
-        const targetRotationQuat = Quaternion.FromEulerAngles(
-          cube.currentRotation.x,
-          cube.currentRotation.y,
-          cube.currentRotation.z,
-        );
-        body.setTargetTransform(cube.currentPosition, targetRotationQuat);
-        body.setLinearVelocity(Vector3.Zero());
-        body.setAngularVelocity(Vector3.Zero());
-      }
+      body.setAngularVelocity(Vector3.Zero());
     });
   }
 
