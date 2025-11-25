@@ -5,7 +5,7 @@
   "DEV_BRANCH": "dev",
   "INSTALL_DEPS_COMMAND": "npm ci --production=false",
   "MAIN_BRANCH": "main",
-  "NODE_VERSION": "20",
+  "NODE_VERSION": "18",
   "PROJECT_NAME": "Cubewall Presenter",
   "PROJECT_SLUG": "cubewall-presenter",
   "PROJECT_TYPE": "node",
