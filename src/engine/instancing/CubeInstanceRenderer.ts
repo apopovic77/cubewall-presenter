@@ -20,8 +20,14 @@ const VISIBLE_LAYER_MASK = 0x0fffffff;
 const ATLAS_SIZE_PX = 4096;
 /** Inset per atlas cell so mip levels do not bleed neighbouring images into a face. */
 const ATLAS_CELL_PADDING_PX = 3;
-/** Atlas uploads are batched; each upload copies the whole 4096² canvas to the GPU. */
+/**
+ * Atlas uploads are batched: each copies the whole 4096² canvas to the GPU and
+ * rebuilds its mipmaps. While many images are still loading, upload rarely;
+ * once the queue is (almost) empty, upload promptly.
+ */
 const ATLAS_UPLOAD_INTERVAL_MS = 250;
+const ATLAS_UPLOAD_INTERVAL_LOADING_MS = 1500;
+const ATLAS_LOADING_THRESHOLD = 8;
 
 const ATLAS_RECT_ATTRIBUTE = 'atlasRect';
 
@@ -92,6 +98,7 @@ export class CubeInstanceRenderer {
   private readonly frameObserver: Observer<Scene>;
   private readonly hiddenMatrix = Matrix.Scaling(0, 0, 0);
   private disposed = false;
+  private cropToSquare = true;
 
   constructor(scene: Scene, cubeSize: number, faceUVs: Vector4[]) {
     this.scene = scene;
@@ -122,10 +129,15 @@ export class CubeInstanceRenderer {
     VertexData.CreateBox({ size: cubeSize, faceUV: faceUVs, sideOrientation: Mesh.FRONTSIDE }).applyToMesh(this.mesh, true);
   }
 
-  /** Takes over rendering of these cubes (replaces the previous set). */
-  setCubes(cubes: InstancedCube[]): void {
+  /**
+   * Takes over rendering of these cubes (replaces the previous set).
+   * `cropToSquare`: cubes show the image's centre square; tiles (whose
+   * geometry already has the image aspect) show the whole image.
+   */
+  setCubes(cubes: InstancedCube[], options: { cropToSquare?: boolean } = {}): void {
     this.releaseCubes();
     this.cubes = cubes;
+    this.cropToSquare = options.cropToSquare ?? true;
     const count = cubes.length;
     this.cellsPerRow = Math.max(1, Math.ceil(Math.sqrt(count)));
     this.cellSizePx = Math.floor(ATLAS_SIZE_PX / this.cellsPerRow);
@@ -211,12 +223,15 @@ export class CubeInstanceRenderer {
     if (count === 0) return;
     for (let index = 0; index < count; index += 1) {
       const cube = this.cubes[index];
-      const matrix = this.detached.has(cube) ? this.hiddenMatrix : cube.mesh.computeWorldMatrix(true);
+      const hidden = this.detached.has(cube) || !cube.mesh.isEnabled();
+      const matrix = hidden ? this.hiddenMatrix : cube.mesh.computeWorldMatrix(true);
       matrix.copyToArray(this.matrices, index * 16);
     }
     this.mesh.thinInstanceBufferUpdated('matrix');
 
-    if (this.atlasDirty && performance.now() - this.lastAtlasUpload >= ATLAS_UPLOAD_INTERVAL_MS) {
+    const interval =
+      this.imageRequests.size > ATLAS_LOADING_THRESHOLD ? ATLAS_UPLOAD_INTERVAL_LOADING_MS : ATLAS_UPLOAD_INTERVAL_MS;
+    if (this.atlasDirty && performance.now() - this.lastAtlasUpload >= interval) {
       this.atlas.update();
       this.atlasDirty = false;
       this.lastAtlasUpload = performance.now();
@@ -256,9 +271,14 @@ export class CubeInstanceRenderer {
     this.markAtlasDirty();
   }
 
-  /** Centre square of the image, like the per-cube aspect crop; the padding repeats the edge pixels. */
+  /** Cubes: centre square of the image, like the per-cube aspect crop. Tiles: the whole image, squeezed into the cell. */
   private drawImageCell(index: number, image: HTMLImageElement): void {
     const { x, y } = this.cellOrigin(index);
+    if (!this.cropToSquare) {
+      this.atlasContext.drawImage(image, x, y, this.cellSizePx, this.cellSizePx);
+      this.markAtlasDirty();
+      return;
+    }
     const side = Math.min(image.naturalWidth, image.naturalHeight);
     const sx = (image.naturalWidth - side) / 2;
     const sy = (image.naturalHeight - side) / 2;

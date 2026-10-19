@@ -125,6 +125,10 @@ export class CubeField {
   private readonly physics: FieldPhysics;
   private readonly holdMatrix = new Matrix();
   private contentGeneration = 0;
+  /** Geometry mode the instanced renderer is currently set up for. */
+  private instancingMode: 'cube' | 'tile' | null = null;
+  /** AR: no glass text tiles (one HTML-rendered texture and mesh each; too heavy for a headset). */
+  private tileCaptionsSuppressed = false;
   private fieldAutoRotateActive = false;
   private fieldAutoRotateSpeed = 0.25;
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
@@ -565,15 +569,29 @@ export class CubeField {
       }
     }
 
-    this.instanceRenderer.setGeometry(
-      this.config.cubeSize,
-      this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom),
-    );
-    this.instanceRenderer.setCubes(this.config.geometryMode === 'tile' ? [] : this.cubes);
+    this.configureInstancing();
     this.applyContentToCubes();
     this.updateFieldLayout(0, true);
     // A rebuild while physics runs keeps the mode: new cubes get bodies at their layout poses.
     if (this.physics.active) this.physics.attach(this.cubes);
+  }
+
+  /**
+   * Hands all cells to the instanced renderer with the geometry of the current
+   * mode (cube faces or flat image tiles). Images are reloaded into the atlas.
+   */
+  private configureInstancing(): void {
+    const tileMode = this.config.geometryMode === 'tile';
+    this.instanceRenderer.setGeometry(
+      this.config.cubeSize,
+      tileMode ? this.buildTileFaceUVs() : this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom),
+    );
+    this.instanceRenderer.setCubes(this.cubes, { cropToSquare: !tileMode });
+    this.instancingMode = this.config.geometryMode;
+    this.cubes.forEach((cell) => {
+      if (this.isInstanced(cell)) cell.textureLoaded = false;
+      else this.instanceRenderer.setDetached(cell, true);
+    });
   }
 
   private disposeCubes(): void {
@@ -639,6 +657,7 @@ export class CubeField {
       const current = await this.prepareTileDescriptors(items, generation);
       if (!current) return;
       this.applyTileDescriptorsToCubes();
+      this.configureInstancing();
     } else {
       this.disposeTileDescriptors();
       if (this.cubes.length !== this.config.gridSize * this.config.gridSize) {
@@ -649,8 +668,10 @@ export class CubeField {
           cube.footprint = { width: 1, height: 1, depth: 1 };
           cube.mesh.setEnabled(true);
           cube.mesh.isPickable = true;
+          this.applyGeometryToCell(cube, null);
           this.tileMaterialManager.restoreCubeMaterials(cube);
         });
+        if (this.instancingMode !== this.config.geometryMode) this.configureInstancing();
         this.layoutDirty = true;
       }
     }
@@ -739,7 +760,7 @@ export class CubeField {
     }
     const isStale = () => generation !== this.contentGeneration;
     const descriptors = await this.glassTileFactory.buildDescriptors(items, {
-      includeCaptions: this.config.tiles.captionsEnabled,
+      includeCaptions: this.config.tiles.captionsEnabled && !this.tileCaptionsSuppressed,
       isCancelled: isStale,
     });
     if (isStale()) {
@@ -805,6 +826,7 @@ export class CubeField {
       cube.footprint = { ...descriptor.footprint };
       cube.mesh.isPickable = descriptor.kind === 'image';
       cube.mesh.setEnabled(true);
+      this.instanceRenderer.setDetached(cube, descriptor.kind === 'glassText');
       if (descriptor.kind === 'glassText' && descriptor.glass) {
         cube.material.diffuseTexture = descriptor.glass.texture;
         cube.material.opacityTexture = descriptor.glass.texture;
@@ -1195,8 +1217,9 @@ export class CubeField {
     return safe[index % safe.length];
   }
 
+  /** Cubes and image tiles are instanced; glass text tiles keep their own mesh. */
   private isInstanced(cell: CubeCell): boolean {
-    return this.config.geometryMode !== 'tile' && !cell.tileDescriptor;
+    return cell.tileDescriptor?.kind !== 'glassText';
   }
 
   private loadTextureForCell(cell: CubeCell, url: string): void {
@@ -1292,6 +1315,7 @@ export class CubeField {
       (aspect) => {
         cell.textureLoaded = true;
         cell.textureAspectRatio = Number.isFinite(aspect) ? aspect : null;
+        if (cell.tileDescriptor?.kind === 'image' && cell.textureAspectRatio) this.applyTileAspect(cell, cell.textureAspectRatio);
         if (cell === this.selection) this.loadDetailTexture(cell);
       },
       () => {
@@ -1306,6 +1330,19 @@ export class CubeField {
         }
       },
     );
+  }
+
+  /** Image tile: height from the image's aspect ratio, and the layout re-flows (masonry). */
+  private applyTileAspect(cell: CubeCell, aspect: number): void {
+    const descriptor = cell.tileDescriptor;
+    if (!descriptor) return;
+    const height = descriptor.footprint.width / aspect;
+    descriptor.footprint.height = height;
+    cell.footprint.height = height;
+    const index = this.cubes.indexOf(cell);
+    if (index >= 0) this.tileFootprints[index] = { ...descriptor.footprint };
+    this.applyGeometryToCell(cell, aspect);
+    this.layoutDirty = true;
   }
 
   /**
@@ -2109,6 +2146,10 @@ export class CubeField {
   public endPhysicsDrag(cell: CubeCell): void {
     if (!this.physics.active) return;
     this.physics.endDrag(cell);
+  }
+
+  public setTileCaptionsSuppressed(suppressed: boolean): void {
+    this.tileCaptionsSuppressed = suppressed;
   }
 
   /** AR: a hand (or ray) takes this cube; it follows holdCube until releaseCube. */

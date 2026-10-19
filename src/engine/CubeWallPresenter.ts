@@ -308,6 +308,17 @@ export class CubeWallPresenter {
     this.debug?.('[Physics] Mode: off');
   }
 
+  /**
+   * AR leaves out the glass text tiles (one HTML texture and mesh each, too heavy
+   * for a headset); in tile mode the tiles are rebuilt on entering and leaving.
+   */
+  private onArStateChange(active: boolean): void {
+    this.cubeField.setTileCaptionsSuppressed(active);
+    if (this.config.geometryMode === 'tile' && this.contentItems.length > 0) {
+      void this.setContent(this.contentItems.slice(), this.contentOptionsSnapshot);
+    }
+  }
+
   /** Debug/inspection: mean world position of all cubes. */
   public debugFieldCentroid(): { x: number; y: number; z: number; spread: number } {
     const cells = this.cubeField.getAllCells();
@@ -378,6 +389,7 @@ export class CubeWallPresenter {
         if (cell) this.cubeField.releaseCube(cell, velocity);
       },
       getMenuState: () => this.getArMenuState(),
+      onStateChange: (active) => this.onArStateChange(active),
       onMenuAction: (action) => this.arMenuAction?.(action),
     });
     this.selectionChange = onSelectionChange;
