@@ -170,6 +170,7 @@ export class CubeWallPresenter {
   private billboardFrameId = 0;
   private sceneTime = 0;
   private disposed = false;
+  private debugProbeTimer: ReturnType<typeof setTimeout> | null = null;
   private hoverInteractionEnabled = true;
   private autoSelectEnabled = false;
   private autoSelectInterval = 6;
@@ -319,8 +320,9 @@ export class CubeWallPresenter {
     const adjustedDistance = distance + this.config.depthOfFieldAutoFocusOffset;
     const sharpness = Math.max(0.1, this.config.depthOfFieldAutoFocusSharpness);
     const effectiveFStop = Math.max(0.1, this.config.depthOfFieldFStop / sharpness);
+    // Only the focus distance is tracked in config; the f-stop stays the user's base
+    // value, otherwise dividing by `sharpness` every frame would compound.
     this.config.depthOfFieldFocusDistance = adjustedDistance;
-    this.config.depthOfFieldFStop = effectiveFStop;
     this.sceneController.setDepthOfFieldFocusDistance(adjustedDistance, effectiveFStop);
   }
 
@@ -375,7 +377,9 @@ export class CubeWallPresenter {
     this.updateAxis3DLabels();
 
     // Debug camera and scene
-    setTimeout(() => {
+    this.debugProbeTimer = setTimeout(() => {
+      this.debugProbeTimer = null;
+      if (this.disposed) return;
       const camera = this.sceneController.getCamera();
       this.logDebug(`Camera: pos=${camera.position.toString()} target=${camera.target.toString()} radius=${camera.radius} alpha=${camera.alpha} beta=${camera.beta}`);
       this.logDebug(`Scene ready: ${this.scene.meshes.length} meshes, activeCamera=${this.scene.activeCamera?.name}`);
@@ -1432,6 +1436,10 @@ export class CubeWallPresenter {
   public dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.debugProbeTimer) {
+      clearTimeout(this.debugProbeTimer);
+      this.debugProbeTimer = null;
+    }
     if (this.wheelListener) {
       this.canvasElement.removeEventListener('wheel', this.wheelListener);
       this.wheelListener = null;

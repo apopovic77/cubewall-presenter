@@ -75,9 +75,10 @@ export class SceneController {
       this.updateDepthOfFieldFromConfig();
     });
 
-    const onResize = () => this.engine.resize();
-    window.addEventListener('resize', onResize);
-    this.disposeHandlers.push(() => window.removeEventListener('resize', onResize));
+    // Element size, not window size: also catches layout changes such as a docked panel.
+    const resizeObserver = new ResizeObserver(() => this.engine.resize());
+    resizeObserver.observe(canvas);
+    this.disposeHandlers.push(() => resizeObserver.disconnect());
   }
 
   private createCamera(canvas: HTMLCanvasElement): ArcRotateCamera {

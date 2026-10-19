@@ -31,15 +31,8 @@ export function CanvasStage({
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
 
-    // Set canvas size to match its display size
-    const resizeCanvas = () => {
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-    };
-    resizeCanvas();
-
+    // Canvas pixel size is owned by the Babylon engine (hardware scaling = 1/dpr);
+    // SceneController resizes it whenever the element changes size.
     const presenter = new CubeWallPresenter({
       canvas,
       onSelectionChange,
@@ -53,14 +46,7 @@ export function CanvasStage({
     onPresenterReady?.(presenter);
     presenter.start();
 
-    // Handle window resize
-    const handleResize = () => {
-      resizeCanvas();
-    };
-    window.addEventListener('resize', handleResize);
-
     return () => {
-      window.removeEventListener('resize', handleResize);
       presenter.dispose();
       presenterRef.current = null;
       onPresenterReady?.(null);

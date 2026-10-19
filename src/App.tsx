@@ -24,6 +24,7 @@ import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
+const CONTENT_RETRY_DELAY_MS = 30_000;
 const ENABLE_SERVER_SETTINGS = import.meta.env.VITE_ENABLE_SETTINGS_SERVER !== 'false';
 const LEGACY_HTML_CONTENT = '<strong>Cube Info</strong><br/><em>Customize me!</em>';
 const LEGACY_BILLBOARD_MARKERS = [
@@ -745,6 +746,15 @@ export default function App() {
     [applyContentToPresenter, handleSettingsChange, setLayoutOverride],
   );
 
+  // Kiosks run unattended: retry a failed load on their own.
+  useEffect(() => {
+    if (contentStatus !== 'error') return undefined;
+    const timer = window.setTimeout(() => {
+      void refreshContent();
+    }, CONTENT_RETRY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [contentStatus, refreshContent]);
+
   const handleRetryLoad = useCallback(() => {
     setContentStatus('loading');
     void refreshContent();
@@ -756,9 +766,11 @@ export default function App() {
     if (!settings) return;
     syncConfigWithSettings(settings);
     setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
-    const shouldPersist = hasPersistedRef.current || initialSourceRef.current === 'cookie';
+    // Only write back when the session started from the server's settings; a
+    // session that fell back to cookie/defaults must not overwrite the shared store.
+    const shouldPersist = hasPersistedRef.current && initialSourceRef.current === 'server';
     if (ENABLE_SERVER_SETTINGS && shouldPersist) {
-      void saveServerSettings(settings);
+      saveServerSettings(settings);
     }
     hasPersistedRef.current = true;
 
