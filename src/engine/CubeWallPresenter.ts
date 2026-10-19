@@ -279,16 +279,17 @@ export class CubeWallPresenter {
       this.physicsDragCandidate = null;
       this.activePhysicsDrag = null;
       this.skipNextPhysicsClick = false;
-      await this.sceneController.enablePhysicsAsync();
-      this.cubeField.enablePhysicsDrop();
-      this.cubeField.setPhysicsAnchorsEnabled(false);
+      await this.cubeField.enablePhysics('classic');
+      // F3 may have been pressed again while Havok was loading.
+      const modeAfterLoad = this.physicsMode as 'off' | 'classic' | 'anchor';
+      if (modeAfterLoad === 'anchor') this.cubeField.setPhysicsMode('anchor');
       this.debug?.('[Physics] Mode: classic (F3 -> anchor, F3 -> off)');
       return;
     }
 
     if (this.physicsMode === 'classic') {
       this.physicsMode = 'anchor';
-      this.cubeField.setPhysicsAnchorsEnabled(true);
+      this.cubeField.setPhysicsMode('anchor');
       this.debug?.('[Physics] Mode: anchor (morph will use anchors)');
       return;
     }
@@ -296,9 +297,7 @@ export class CubeWallPresenter {
     // physicsMode === 'anchor'
     this.physicsMode = 'off';
     this.physicsActive = false;
-    this.cubeField.setPhysicsAnchorsEnabled(false);
-    this.cubeField.disablePhysicsDrop();
-    this.sceneController.disablePhysics();
+    this.cubeField.disablePhysics();
     this.hoverInteractionEnabled = this.savedHoverInteraction;
     this.autoSelectEnabled = this.savedAutoSelect;
     this.autoSelectElapsed = 0;
@@ -436,6 +435,9 @@ export class CubeWallPresenter {
 
     this.scene.onPointerObservable.add((pointerInfo: PointerInfo) => {
       if (this.disposed) return;
+      // In AR, XR controllers synthesize pointer events without screen coordinates;
+      // selection and grabbing come from ArSessionController, only hover ripples stay.
+      if (this.arController.isActive && pointerInfo.type !== PointerEventTypes.POINTERMOVE) return;
       switch (pointerInfo.type) {
         case PointerEventTypes.POINTERMOVE: {
           const moveEvent = pointerInfo.event as PointerEvent | MouseEvent | null;
@@ -458,7 +460,7 @@ export class CubeWallPresenter {
             }
           }
           if (this.physicsActive) {
-            this.handlePhysicsPointerMove(pointerInfo);
+            if (!this.arController.isActive) this.handlePhysicsPointerMove(pointerInfo);
             break;
           }
           if (!this.hoverInteractionEnabled) {
@@ -685,8 +687,6 @@ export class CubeWallPresenter {
     const dragCell = this.activePhysicsDrag.cell;
     const point = this.getGroundIntersection(pointerInfo);
     if (!point) return;
-    const groundHeight = this.sceneController.getPhysicsGroundHeight();
-    point.y = groundHeight + this.config.cubeSize * 0.5;
     this.cubeField.updatePhysicsDrag(dragCell, point);
   }
 
@@ -724,7 +724,7 @@ export class CubeWallPresenter {
 
     const camera = this.sceneController.getCamera();
     const ray = this.scene.createPickingRay(scaledX, scaledY, Matrix.Identity(), camera);
-    const groundHeight = this.sceneController.getPhysicsGroundHeight();
+    const groundHeight = this.cubeField.getPhysicsGroundWorldY();
     const plane = Plane.FromPositionAndNormal(new Vector3(0, groundHeight, 0), Vector3.Up());
     const distance = ray.intersectsPlane(plane);
     if (distance === null) {

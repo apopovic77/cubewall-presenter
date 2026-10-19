@@ -9,9 +9,6 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { PhysicsAggregate } from '@babylonjs/core/Physics/v2/physicsAggregate';
-import { PhysicsConstraint } from '@babylonjs/core/Physics/v2/physicsConstraint';
-import { PhysicsShapeType, PhysicsMotionType, PhysicsConstraintType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import type { FloatArray } from '@babylonjs/core/types';
 import { TileMaterialManager } from './tiles/TileMaterialManager';
@@ -37,6 +34,7 @@ import { GlassTileFactory } from './tiles/GlassTileFactory';
 import type { TileDescriptor, TileFootprint } from './tiles/TileTypes';
 import { MasonryField } from './layouts/fields/MasonryField';
 import { CubeInstanceRenderer } from './instancing/CubeInstanceRenderer';
+import { FieldPhysics, type FieldPhysicsMode } from './physics/FieldPhysics';
 
 /** Pixel width requested from storage for cube face textures (atlas cells are ~160 px). */
 const CUBE_TEXTURE_WIDTH_PX = 320;
@@ -76,18 +74,12 @@ export interface CubeCell {
   content: CubeContentItem | null;
   tileDescriptor: TileDescriptor | null;
   footprint: TileFootprint;
-  physicsAggregate?: PhysicsAggregate | null;
-  anchorMesh: Mesh | null;
-  anchorAggregate?: PhysicsAggregate | null;
-  anchorConstraint?: PhysicsConstraint | null;
   isBeingDragged: boolean;
-  liftAnchor: Vector3 | null;
   physicsSpinAngle: number;
   textureAspectRatio: number | null;
   textureSidePattern: TextureSidePattern;
   textureMirrorTopBottom: boolean;
   textureUvLayout: TextureUvLayout;
-  physicsMotionType: PhysicsMotionType;
 }
 
 export interface CubeContentOptions {
@@ -129,7 +121,8 @@ export class CubeField {
   private useDynamicFallbacks = false;
   private useSafeFallbackTextures = false;
   private contentItems: CubeContentItem[] = [];
-  private physicsActive: boolean = false;
+  /** Rigid-body simulation (drop / anchor modes); runs in field space, see FieldPhysics. */
+  private readonly physics: FieldPhysics;
   private fieldAutoRotateActive = false;
   private fieldAutoRotateSpeed = 0.25;
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
@@ -138,7 +131,6 @@ export class CubeField {
     rows: [],
     columns: [],
   };
-  private physicsAnchorsEnabled = false;
   private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
   private readonly fieldEngine: FieldLayoutEngine;
   private fieldTime = 0;
@@ -167,9 +159,6 @@ export class CubeField {
       cell.currentRotation.copyFrom(orientation);
       cell.targetRotation.copyFrom(orientation);
       cell.mesh.rotation.copyFrom(orientation);
-      if (this.physicsActive && cell.physicsAggregate) {
-        this.refreshPhysicsForCell(cell);
-      }
       return;
     }
 
@@ -202,9 +191,6 @@ export class CubeField {
     cell.currentRotation.copyFrom(orientation);
     cell.targetRotation.copyFrom(orientation);
     cell.mesh.rotation.copyFrom(orientation);
-    if (this.physicsActive && cell.physicsAggregate) {
-      this.refreshPhysicsForCell(cell);
-    }
   }
 
   private getOrientationRotation(): Vector3 {
@@ -271,32 +257,6 @@ export class CubeField {
     return Array.from(axes);
   }
 
-  private refreshPhysicsForCell(cell: CubeCell): void {
-    if (!this.physicsActive || !cell.physicsAggregate) {
-      return;
-    }
-    const hadAnchor = this.physicsAnchorsEnabled && Boolean(cell.anchorAggregate);
-    if (hadAnchor) {
-      this.disposePhysicsAnchor(cell);
-    }
-    cell.physicsAggregate.dispose();
-    cell.physicsAggregate = new PhysicsAggregate(
-      cell.mesh,
-      PhysicsShapeType.BOX,
-      { mass: 1, restitution: 0.2, friction: 0.6 },
-      this.scene,
-    );
-    const body = cell.physicsAggregate.body;
-    if (body && !body.isDisposed) {
-      body.setMotionType(PhysicsMotionType.DYNAMIC);
-      body.setLinearVelocity(Vector3.Zero());
-      body.setAngularVelocity(Vector3.Zero());
-    }
-    if (hadAnchor) {
-      this.createPhysicsAnchor(cell);
-    }
-  }
-
   private mergeLayoutOptions(overrides?: Partial<CubeLayoutConfig>): CubeLayoutConfig {
     const base = this.config.layout;
     const axisKey = overrides?.axisKey && overrides.axisKey.trim() ? overrides.axisKey.trim() : base.axisKey;
@@ -315,6 +275,7 @@ export class CubeField {
     this.root = new TransformNode('cubeFieldRoot', this.scene);
     this.root.rotationQuaternion = Quaternion.Identity();
     this.root.position.set(0, 0, 0);
+    this.physics = new FieldPhysics(scene, this.root, config);
     this.instanceRenderer = new CubeInstanceRenderer(
       scene,
       config.cubeSize,
@@ -443,7 +404,7 @@ export class CubeField {
     return this.fieldAutoRotateActive;
   }
 
-  private updateFieldLayout(deltaTime: number, initial: boolean = false): void {
+  private updateFieldLayout(deltaTime: number, initial: boolean = false, writeMeshes = true): void {
     this.fieldEngine.update(deltaTime);
     if (this.cubes.length === 0) {
       return;
@@ -492,7 +453,7 @@ export class CubeField {
         position.y += descriptor.stacking.yOffset;
       }
       cube.basePosition.copyFrom(position);
-      if (initial || !this.config.wavePositionEnabled) {
+      if (writeMeshes && (initial || !this.config.wavePositionEnabled)) {
         const shouldReset = initial || (!cube.isSelected && !cube.interactionActive);
         if (shouldReset) {
           cube.currentPosition.copyFrom(position);
@@ -581,18 +542,12 @@ export class CubeField {
         content: null,
         tileDescriptor: null,
         footprint: { width: 1, height: 1, depth: 1 },
-        physicsAggregate: null,
-        anchorMesh: null,
-        anchorAggregate: null,
-        anchorConstraint: null,
         isBeingDragged: false,
-        liftAnchor: null,
         physicsSpinAngle: 0,
         textureAspectRatio: null,
         textureSidePattern: this.contentOptions.sidePattern,
         textureMirrorTopBottom: this.contentOptions.mirrorTopBottom,
         textureUvLayout: this.contentOptions.uvLayout,
-          physicsMotionType: PhysicsMotionType.DYNAMIC,
         };
 
         this.cubes.push(cube);
@@ -612,23 +567,23 @@ export class CubeField {
     this.instanceRenderer.setCubes(this.config.geometryMode === 'tile' ? [] : this.cubes);
     this.applyContentToCubes();
     this.updateFieldLayout(0, true);
+    // A rebuild while physics runs keeps the mode: new cubes get bodies at their layout poses.
+    if (this.physics.active) this.physics.attach(this.cubes);
   }
 
   private disposeCubes(): void {
     this.instanceRenderer.setCubes([]);
     this.cubes.forEach((cell) => {
-      this.disposePhysicsAnchor(cell);
       this.tileMaterialManager.disposeForCell(cell);
-      cell.physicsAggregate?.dispose();
       cell.mesh.dispose(false, true);
       cell.material.dispose(false, true);
     });
     this.cubes = [];
     this.selection = null;
-    this.physicsActive = false;
     this.outstandingAspectAdjustments.clear();
   }
   public dispose(): void {
+    this.physics.dispose();
     this.disposeCubes();
     this.instanceRenderer.dispose();
     this.disposeTileDescriptors();
@@ -1783,12 +1738,8 @@ export class CubeField {
     if (this.selection === cell) return;
     if (this.selection) {
       if (this.isInstanced(this.selection)) this.releaseDetailTexture(this.selection);
-      if (this.physicsActive) {
-        this.selection.isBeingDragged = false;
-      }
       this.selection.isSelected = false;
       this.selection.selectionProgress = Math.max(this.selection.selectionProgress, 0);
-      this.selection.liftAnchor = null;
       this.selection = null;
     }
     if (cell) {
@@ -1799,10 +1750,6 @@ export class CubeField {
         this.loadDetailTexture(cell);
       } else if (this.isInstanced(cell) && !cell.textureUrl) {
         this.instanceRenderer.setDetached(cell, true);
-      }
-      if (this.physicsActive) {
-        cell.isBeingDragged = false;
-        cell.liftAnchor = null;
       }
     }
     this.cubes.forEach((cube) => {
@@ -1860,25 +1807,21 @@ export class CubeField {
     }
 
     const refreshLayout = this.layoutDirty;
-    if (!this.physicsActive) {
-      if (refreshLayout) {
-        this.layoutDirty = false;
-      }
-      this.updateFieldLayout(deltaTime, refreshLayout);
+    if (refreshLayout) {
+      this.layoutDirty = false;
     }
+    // The layout (and a running morph) keeps advancing under physics; only the
+    // mesh poses then come from the bodies instead of the layout.
+    this.updateFieldLayout(deltaTime, refreshLayout, !this.physics.active);
     const rotationWaveEnabled = this.config.waveRotationEnabled;
     const normalDirection = this.getNormalDirection();
-    if (this.physicsActive) {
-      const isMorphing = this.fieldEngine.isMorphing();
-      if (this.physicsAnchorsEnabled && isMorphing) {
-        this.ensurePhysicsAnchors();
-        this.updatePhysicsAnchors(deltaTime, sceneTime, normalDirection);
-      } else {
-        this.disposeAllPhysicsAnchors();
-        this.updatePhysicsDrivenCubes(deltaTime);
-      }
+    if (this.physics.active) {
+      const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 0.6);
+      this.physics.drive(deltaTime, this.fieldEngine.isMorphing(), lift);
       return;
     }
+    // Frame-rate independent smoothing; a plain `speed * dt` overshoots on long frames.
+    const interactionBlend = 1 - Math.exp(-this.config.interactionLerpSpeed * deltaTime);
 
     this.cubes.forEach((cube) => {
       if (!this.isSelectableCube(cube)) {
@@ -1981,10 +1924,10 @@ export class CubeField {
       const targetPosition = cube.interactionActive ? cube.targetPosition : intendedPosition;
       const targetRotation = cube.interactionActive ? cube.targetRotation : intendedRotation;
 
-      cube.currentPosition = Vector3.Lerp(cube.currentPosition, targetPosition, this.config.interactionLerpSpeed * deltaTime);
-      cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, targetRotation.x, this.config.interactionLerpSpeed * deltaTime);
-      cube.currentRotation.y = Scalar.Lerp(cube.currentRotation.y, targetRotation.y, this.config.interactionLerpSpeed * deltaTime);
-      cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, targetRotation.z, this.config.interactionLerpSpeed * deltaTime);
+      cube.currentPosition = Vector3.Lerp(cube.currentPosition, targetPosition, interactionBlend);
+      cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, targetRotation.x, interactionBlend);
+      cube.currentRotation.y = Scalar.Lerp(cube.currentRotation.y, targetRotation.y, interactionBlend);
+      cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, targetRotation.z, interactionBlend);
 
       cube.mesh.position.copyFrom(cube.currentPosition);
       cube.mesh.rotation.copyFrom(cube.currentRotation);
@@ -2009,8 +1952,6 @@ export class CubeField {
           return;
         }
         cube.content = null;
-        cube.physicsAggregate?.dispose();
-        cube.physicsAggregate = null;
         if (options.useFallbackTextures) {
           const fallbackUrl = this.pickTextureUrl(index);
           if (fallbackUrl) {
@@ -2046,10 +1987,6 @@ export class CubeField {
       const item = assignments.get(key) ?? null;
 
       cube.content = item ?? null;
-
-      cube.physicsAggregate?.dispose();
-      cube.physicsAggregate = null;
-      cube.physicsMotionType = PhysicsMotionType.DYNAMIC;
 
       let textureUrl = item?.imageUrl ?? '';
       if (!textureUrl && options.useFallbackTextures) {
@@ -2092,328 +2029,42 @@ export class CubeField {
     }
   }
 
-  private createPhysicsAnchor(cube: CubeCell): void {
-    this.disposePhysicsAnchor(cube);
-    const anchorMesh = MeshBuilder.CreateBox(`anchor_${cube.gridX}_${cube.gridZ}`, { size: this.config.cubeSize * 0.9 }, this.scene);
-    anchorMesh.isPickable = false;
-    anchorMesh.visibility = 0;
-    anchorMesh.parent = this.root;
-    anchorMesh.position.copyFrom(cube.mesh.position);
-
-    const anchorAggregate = new PhysicsAggregate(anchorMesh, PhysicsShapeType.BOX, { mass: 0, restitution: 0, friction: 0.8 }, this.scene);
-    anchorAggregate.body.setMotionType(PhysicsMotionType.ANIMATED);
-
-    const dynamicBody = cube.physicsAggregate?.body;
-    let constraint: PhysicsConstraint | null = null;
-    if (dynamicBody && !dynamicBody.isDisposed) {
-      constraint = new PhysicsConstraint(
-        PhysicsConstraintType.BALL_AND_SOCKET,
-        {
-        pivotA: Vector3.Zero(),
-        pivotB: Vector3.Zero(),
-        collision: false,
-        },
-        this.scene,
-      );
-      anchorAggregate.body.addConstraint(dynamicBody, constraint);
+  /** Starts the rigid-body simulation; false if it was switched off again while Havok loaded. */
+  public async enablePhysics(mode: FieldPhysicsMode): Promise<boolean> {
+    if (this.physics.active) {
+      this.physics.setMode(mode);
+      return true;
     }
-
-    cube.anchorMesh = anchorMesh;
-    cube.anchorAggregate = anchorAggregate;
-    cube.anchorConstraint = constraint;
-  }
-
-  private disposePhysicsAnchor(cube: CubeCell): void {
-    cube.anchorConstraint?.dispose();
-    cube.anchorConstraint = null;
-    cube.anchorAggregate?.dispose();
-    cube.anchorAggregate = null;
-    cube.anchorMesh?.dispose();
-    cube.anchorMesh = null;
-  }
-
-  private setCubeMotionType(cube: CubeCell, motion: PhysicsMotionType): void {
-    const body = cube.physicsAggregate?.body;
-    if (!body || body.isDisposed) return;
-    if (cube.physicsMotionType === motion) {
-      return;
-    }
-    body.setMotionType(motion);
-    body.setLinearVelocity(Vector3.Zero());
-    body.setAngularVelocity(Vector3.Zero());
-    cube.physicsMotionType = motion;
-  }
-
-  public setPhysicsAnchorsEnabled(enabled: boolean): void {
-    if (this.physicsAnchorsEnabled === enabled) {
-      return;
-    }
-    this.physicsAnchorsEnabled = enabled;
-    if (!enabled) {
-      this.disposeAllPhysicsAnchors();
-    }
-  }
-
-  private ensurePhysicsAnchors(): void {
-    this.cubes.forEach((cube) => {
-      if (!cube.physicsAggregate || cube.physicsAggregate.body?.isDisposed) {
-        return;
-      }
-      if (!cube.anchorAggregate || cube.anchorAggregate.body.isDisposed) {
-        this.createPhysicsAnchor(cube);
-      }
-    });
-  }
-
-  private disposeAllPhysicsAnchors(): void {
-    this.cubes.forEach((cube) => {
-      if (cube.anchorAggregate) {
-        this.disposePhysicsAnchor(cube);
-      }
-    });
-  }
-
-  private updatePhysicsAnchors(deltaTime: number, sceneTime: number, normalDirection: number): void {
-    this.cubes.forEach((cube) => {
-      cube.currentPosition.copyFrom(cube.mesh.position);
-      cube.currentRotation.copyFrom(cube.mesh.rotation);
-
-      cube.individualXRotAccumulator += this.config.individualXRotSpeed * deltaTime;
-
-      if (cube.isSelected) {
-        cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 3);
-      } else {
-        cube.selectionProgress = Math.max(0, cube.selectionProgress - deltaTime * 3);
-      }
-
-      const selectionEased = easeOutCubic(cube.selectionProgress);
-      let selectedYRotation = 0;
-      if (this.config.selectionSpinEnabled) {
-        cube.physicsSpinAngle += this.config.selectedCubeRotation * deltaTime;
-        selectedYRotation = cube.physicsSpinAngle;
-      } else {
-        selectedYRotation = this.config.selectedCubeRotation * selectionEased;
-      }
-      const selectionOffset = new Vector3(0, normalDirection * this.config.selectedCubeLift * selectionEased, 0);
-
-      const waveRotX = this.config.waveAmplitudeRot * Math.sin(cube.basePosition.z * this.config.waveFrequencyRot + sceneTime * 1.2 + cube.wavePhase);
-      const waveRotZ = this.config.waveAmplitudeRot * Math.cos(cube.basePosition.x * this.config.waveFrequencyRot + sceneTime * 1.1 + cube.wavePhase * 0.6);
-
-      const targetPosition = cube.basePosition.clone().add(selectionOffset);
-      const targetRotation = cube.baseRotation.clone();
-      targetRotation.x += cube.individualXRotAccumulator + waveRotX;
-      targetRotation.y += selectedYRotation;
-      targetRotation.z += waveRotZ;
-
-      cube.targetPosition.copyFrom(targetPosition);
-      cube.targetRotation.copyFrom(targetRotation);
-
-      const anchorAggregate = cube.anchorAggregate;
-      const anchorMesh = cube.anchorMesh;
-      if (!anchorAggregate || anchorAggregate.body.isDisposed) {
-        cube.mesh.position.copyFrom(targetPosition);
-        cube.mesh.rotation.copyFrom(targetRotation);
-        return;
-      }
-
-      if (anchorMesh) {
-        anchorMesh.position.copyFrom(targetPosition);
-      }
-
-      const anchorBody = anchorAggregate.body;
-      const anchorRotation = Quaternion.FromEulerAngles(targetRotation.x, targetRotation.y, targetRotation.z);
-      anchorBody.setTargetTransform(targetPosition, anchorRotation);
-    });
-  }
-
-  private updatePhysicsDrivenCubes(deltaTime: number): void {
-    const lerpSpeed = this.config.interactionLerpSpeed * Math.min(1, deltaTime * 60);
-    const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 0.6);
-    const autorotate = this.config.slowAutorotateSpeed * deltaTime;
-
-    const rootWorld = this.root.getWorldMatrix();
-    const rootWorldInverse = rootWorld.clone();
-    rootWorldInverse.invert();
-    let physicsUpLocal = Vector3.TransformNormal(Vector3.UpReadOnly, rootWorldInverse);
-    if (!Number.isFinite(physicsUpLocal.x) || !Number.isFinite(physicsUpLocal.y) || !Number.isFinite(physicsUpLocal.z)) {
-      physicsUpLocal = Vector3.Up();
-    }
-    physicsUpLocal.normalize();
-
-    this.cubes.forEach((cube) => {
-      if (cube.isBeingDragged) {
-        cube.selectionProgress = 0;
-        cube.liftAnchor = null;
-        cube.physicsSpinAngle = 0;
-        cube.currentPosition.copyFrom(cube.mesh.position);
-        cube.currentRotation.copyFrom(cube.mesh.rotation);
-        return;
-      }
-
-      if (!cube.isSelected) {
-        cube.selectionProgress = 0;
-        cube.liftAnchor = null;
-        cube.physicsSpinAngle = 0;
-        cube.currentPosition.copyFrom(cube.mesh.position);
-        cube.currentRotation.copyFrom(cube.mesh.rotation);
-        this.setCubeMotionType(cube, PhysicsMotionType.DYNAMIC);
-        return;
-      }
-
-      cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 2);
-      const body = cube.physicsAggregate?.body;
-      if (!body || body.isDisposed) return;
-
-      if (!cube.liftAnchor) {
-        cube.liftAnchor = cube.mesh.position.clone();
-        cube.mesh.physicsImpostor?.setLinearVelocity(Vector3.Zero());
-        body.setLinearVelocity(Vector3.Zero());
-        body.setAngularVelocity(Vector3.Zero());
-        cube.currentPosition.copyFrom(cube.mesh.position);
-      }
-
-      const selectionEased = easeOutCubic(cube.selectionProgress);
-      const anchor = cube.liftAnchor;
-      const targetOffset = physicsUpLocal.scale(lift * selectionEased);
-      const targetPosition = anchor.add(targetOffset);
-
-      const toTarget = targetPosition.subtract(cube.currentPosition);
-      const distance = toTarget.length();
-      if (distance > 1e-4) {
-        const liftSpeed = Math.max(0.1, this.config.physicsLiftSpeed);
-        const desiredVelocity = toTarget.normalize().scale(liftSpeed);
-        body.setMotionType(PhysicsMotionType.DYNAMIC);
-        body.setLinearVelocity(desiredVelocity);
-      } else {
-        cube.selectionProgress = 1;
-        body.setLinearVelocity(Vector3.Zero());
-      }
-
-      cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, 0, lerpSpeed);
-      cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, 0, lerpSpeed);
-
-      const rotationMode = this.config.physicsSelectedRotationMode ?? 'static';
-      if (rotationMode === 'animated') {
-        cube.physicsSpinAngle += (this.config.physicsSelectedRotationSpeed ?? 0) * deltaTime;
-      } else {
-        cube.physicsSpinAngle = 0;
-      }
-      const targetYRotation =
-        rotationMode === 'animated' ? cube.physicsSpinAngle * selectionEased : 0;
-      const newY = Scalar.Lerp(cube.currentRotation.y, targetYRotation, lerpSpeed);
-      cube.currentRotation.y = this.config.slowAutorotateEnabled ? newY + autorotate : newY;
-
-      body.setAngularVelocity(Vector3.Zero());
-    });
-  }
-
-
-  public beginPhysicsDrag(cell: CubeCell): void {
-    if (!this.physicsActive) return;
-    if (this.fieldEngine.isMorphing()) {
-      this.disposePhysicsAnchor(cell);
-    }
-    const body = cell.physicsAggregate?.body;
-    if (body && !body.isDisposed) {
-      body.setMotionType(PhysicsMotionType.ANIMATED);
-      body.setLinearVelocity(Vector3.Zero());
-      body.setAngularVelocity(Vector3.Zero());
-    }
-    cell.isBeingDragged = true;
-    cell.isSelected = false;
-    cell.selectionProgress = 0;
-    cell.liftAnchor = null;
-    if (this.selection === cell) {
-      this.selection = null;
-    }
-    cell.material.emissiveColor = Color3.Black();
-  }
-
-  public updatePhysicsDrag(cell: CubeCell, position: Vector3): void {
-    if (!this.physicsActive || !cell.isBeingDragged) return;
-    cell.currentPosition.copyFrom(position);
-    cell.mesh.position.copyFrom(position);
-    const rotationQuat = cell.mesh.rotationQuaternion ?? Quaternion.RotationYawPitchRoll(
-      cell.mesh.rotation.y,
-      cell.mesh.rotation.x,
-      cell.mesh.rotation.z,
-    );
-    const body = cell.physicsAggregate?.body;
-    if (body && !body.isDisposed) {
-      body.setTargetTransform(position, rotationQuat);
-      body.setLinearVelocity(Vector3.Zero());
-      body.setAngularVelocity(Vector3.Zero());
-    }
-  }
-
-  public endPhysicsDrag(cell: CubeCell): void {
-    if (!this.physicsActive) return;
-    cell.isBeingDragged = false;
-    cell.liftAnchor = null;
-    const body = cell.physicsAggregate?.body;
-    if (body && !body.isDisposed) {
-      body.setMotionType(PhysicsMotionType.DYNAMIC);
-      body.setLinearVelocity(Vector3.Zero());
-      body.setAngularVelocity(Vector3.Zero());
-    }
-    if (this.fieldEngine.isMorphing()) {
-      this.createPhysicsAnchor(cell);
-    }
-  }
-
-  public enablePhysicsDrop(): void {
-    if (this.physicsActive) return;
-    this.physicsActive = true;
-    this.physicsAnchorsEnabled = false;
+    this.selectCell(null);
     this.outstandingAspectAdjustments.clear();
-    this.selection = null;
     this.cubes.forEach((cube) => {
-      cube.physicsAggregate?.dispose();
-      cube.physicsAggregate = new PhysicsAggregate(
-        cube.mesh,
-        PhysicsShapeType.BOX,
-        { mass: 1, restitution: 0.2, friction: 0.6 },
-        this.scene,
-      );
-      cube.physicsMotionType = PhysicsMotionType.DYNAMIC;
-      cube.isSelected = false;
+      cube.selectionProgress = 0;
+      cube.physicsSpinAngle = 0;
+      cube.isBeingDragged = false;
+    });
+    return this.physics.enable(this.cubes, mode);
+  }
+
+  public setPhysicsMode(mode: FieldPhysicsMode): void {
+    this.physics.setMode(mode);
+  }
+
+  /** Stops the simulation; cubes glide back into the layout from where they lie. */
+  public disablePhysics(): void {
+    // Always disable: it also cancels an enable that is still loading Havok.
+    const wasActive = this.physics.active;
+    this.physics.disable();
+    if (!wasActive) return;
+    this.selectCell(null);
+    this.outstandingAspectAdjustments.clear();
+    this.cubes.forEach((cube) => {
       cube.isBeingDragged = false;
       cube.selectionProgress = 0;
       cube.physicsSpinAngle = 0;
       cube.currentPosition.copyFrom(cube.mesh.position);
-      cube.currentRotation.copyFrom(cube.mesh.rotation);
-      cube.liftAnchor = null;
-      const body = cube.physicsAggregate.body;
-      if (body && !body.isDisposed) {
-        body.setMotionType(PhysicsMotionType.DYNAMIC);
-        body.setLinearVelocity(Vector3.Zero());
-        body.setAngularVelocity(Vector3.Zero());
-      }
-    });
-  }
-
-  public disablePhysicsDrop(): void {
-    if (!this.physicsActive) return;
-    this.physicsActive = false;
-    this.physicsAnchorsEnabled = false;
-    this.selection = null;
-    this.outstandingAspectAdjustments.clear();
-    this.cubes.forEach((cube) => {
-      this.disposePhysicsAnchor(cube);
-      cube.physicsAggregate?.dispose();
-      cube.physicsAggregate = null;
-      cube.isBeingDragged = false;
-      cube.selectionProgress = 0;
-      cube.liftAnchor = null;
-      cube.physicsSpinAngle = 0;
-      cube.currentPosition.copyFrom(cube.mesh.position);
-
-      let localRotation: Vector3;
-      if (cube.mesh.rotationQuaternion) {
-        localRotation = cube.mesh.rotationQuaternion.toEulerAngles();
-      } else {
-        localRotation = cube.mesh.rotation.clone();
-      }
+      const localRotation = cube.mesh.rotationQuaternion
+        ? cube.mesh.rotationQuaternion.toEulerAngles()
+        : cube.mesh.rotation.clone();
       cube.mesh.rotationQuaternion = null;
       cube.mesh.rotation.copyFrom(localRotation);
       cube.currentRotation.copyFrom(localRotation);
@@ -2425,9 +2076,31 @@ export class CubeField {
     this.layoutDirty = true;
   }
 
-  public isPhysicsActive(): boolean {
-    return this.physicsActive;
+  public beginPhysicsDrag(cell: CubeCell): void {
+    if (!this.physics.active) return;
+    if (this.selection === cell) this.selectCell(null);
+    this.physics.beginDrag(cell);
   }
+
+  /** `worldPoint`: where the pointer ray meets the ground plane (see getPhysicsGroundWorldY). */
+  public updatePhysicsDrag(cell: CubeCell, worldPoint: Vector3): void {
+    if (!this.physics.active || !cell.isBeingDragged) return;
+    this.physics.dragTo(cell, worldPoint);
+  }
+
+  public endPhysicsDrag(cell: CubeCell): void {
+    if (!this.physics.active) return;
+    this.physics.endDrag(cell);
+  }
+
+  public getPhysicsGroundWorldY(): number {
+    return this.physics.groundWorldY();
+  }
+
+  public isPhysicsActive(): boolean {
+    return this.physics.active;
+  }
+
 }
 
 function easeOutCubic(t: number): number {

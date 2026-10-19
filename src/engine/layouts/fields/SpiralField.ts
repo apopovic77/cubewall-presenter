@@ -12,7 +12,8 @@ export class SpiralField implements FieldDefinition {
     const angle = turns * Math.PI * 2 * t + time * 0.00001;
     const radiusBase = (context.gridSize * (context.cubeSize + context.cubeSpacing)) * 0.9;
     const radius = radiusBase * (0.2 + 0.8 * t);
-    const yRange = radiusBase * 10;
+    // Height in proportion to the radius (was radiusBase * 10: a ~500-unit tower for 625 cubes).
+    const yRange = radiusBase;
 
     const y = (t - 0.5) * 2 * yRange + Math.sin(time * 0.7 + t * Math.PI * 6) * context.cubeSize * 0.4;
     const x = Math.cos(angle) * radius;
