@@ -1,73 +1,40 @@
-# React + TypeScript + Vite
+# Cubewall Presenter
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A 3D wall of cubes (Babylon.js 8 + Havok, React 19, Vite) that presents content items, for example the Koralmbahn press events, as textured cubes with a billboard for the selected item.
 
-Currently, two official plugins are available:
+Live: https://cubewall.arkturian.com
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Content
 
-## React Compiler
+The provider is chosen by `VITE_CUBE_CONTENT_PROVIDER` (`.env.production`):
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Provider | Source |
+|---|---|
+| `eventcrawler` (production) | EventCrawler v2, `GET /api/v1/events/?project_slug=…` at `VITE_EVENTCRAWLER_API_URL` |
+| `koralmbahn` | legacy landesmuseum-api (`/admin/candidates`), **offline** |
+| `default` | no content |
 
-## Expanding the ESLint configuration
+The eventcrawler project is `VITE_EVENTCRAWLER_PROJECT_SLUG` (default `default` = Koralmbahn), overridable per page with `?project=<slug>` (e.g. `?project=defence`).
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Settings store
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+`server/settingsServer.mjs` is a small Express store for presenter settings, served under `/settings` (nginx → `127.0.0.1:5001`, systemd unit `cubewall-settings.service` on arkturian).
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- CORS is limited to `ALLOWED_ORIGINS` (default: production origin and `http://localhost:5173`).
+- When `SETTINGS_WRITE_TOKEN` is set, writes need the header `X-Settings-Token`. The client sends the value stored in `localStorage['cwSettingsToken']`.
+- Writes are serialized and atomic.
+- The client writes debounced (800 ms), and only if the session started from the server's settings. Dev sessions (`npm run dev`) read production settings but never write them unless `VITE_SETTINGS_API_URL` points to another store.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Development
+
+```bash
+npm ci
+npm run dev             # Vite dev server
+npm run settings-server # local settings store on :5001
+npm run build
+npm run lint
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Deployment
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+`./devops push "msg"` on `dev`, `./devops release` to production. The `Build & Deploy` workflow runs on the self-hosted arkserver runner. It SSHes to arkturian, builds in `/var/code/cubewall-presenter`, rsyncs `dist/` to `/var/www/cubewall/site`, and restarts `cubewall-settings.service`.
