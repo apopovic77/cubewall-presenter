@@ -36,9 +36,12 @@ import { LineWaveField } from './layouts/fields/LineWaveField';
 import { GlassTileFactory } from './tiles/GlassTileFactory';
 import type { TileDescriptor, TileFootprint } from './tiles/TileTypes';
 import { MasonryField } from './layouts/fields/MasonryField';
+import { CubeInstanceRenderer } from './instancing/CubeInstanceRenderer';
 
-/** Pixel width requested from storage for cube face textures. */
+/** Pixel width requested from storage for cube face textures (atlas cells are ~160 px). */
 const CUBE_TEXTURE_WIDTH_PX = 320;
+/** Pixel width of the texture loaded for the selected cube, which is seen up close. */
+const DETAIL_TEXTURE_WIDTH_PX = 1024;
 
 export interface CubeSelectionInfo {
   readonly gridX: number;
@@ -116,6 +119,8 @@ export class CubeField {
   private readonly scene: Scene;
   private readonly config: CubeWallConfig;
   private root: TransformNode;
+  /** Draws the cubes in cube geometry mode; tile mode renders each mesh itself. */
+  private readonly instanceRenderer: CubeInstanceRenderer;
   private cubes: CubeCell[] = [];
   private selection: CubeCell | null = null;
   private dynamicImageUrls: string[] = [];
@@ -310,6 +315,11 @@ export class CubeField {
     this.root = new TransformNode('cubeFieldRoot', this.scene);
     this.root.rotationQuaternion = Quaternion.Identity();
     this.root.position.set(0, 0, 0);
+    this.instanceRenderer = new CubeInstanceRenderer(
+      scene,
+      config.cubeSize,
+      this.computeFaceUVs(config.textureSidePattern, config.textureMirrorTopBottom),
+    );
     const initialLayout: CubeLayoutConfig = { ...config.layout };
     this.contentOptions = {
       repeatContent: true,
@@ -591,11 +601,17 @@ export class CubeField {
       }
     }
 
+    this.instanceRenderer.setGeometry(
+      this.config.cubeSize,
+      this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom),
+    );
+    this.instanceRenderer.setCubes(this.config.geometryMode === 'tile' ? [] : this.cubes);
     this.applyContentToCubes();
     this.updateFieldLayout(0, true);
   }
 
   private disposeCubes(): void {
+    this.instanceRenderer.setCubes([]);
     this.cubes.forEach((cell) => {
       this.disposePhysicsAnchor(cell);
       this.tileMaterialManager.disposeForCell(cell);
@@ -610,6 +626,7 @@ export class CubeField {
   }
   public dispose(): void {
     this.disposeCubes();
+    this.instanceRenderer.dispose();
     this.disposeTileDescriptors();
     this.root.dispose();
     this.glassTileFactory.dispose();
@@ -1203,6 +1220,10 @@ export class CubeField {
     return safe[index % safe.length];
   }
 
+  private isInstanced(cell: CubeCell): boolean {
+    return this.config.geometryMode !== 'tile' && !cell.tileDescriptor;
+  }
+
   private loadTextureForCell(cell: CubeCell, url: string): void {
     url = this.normalizeTextureUrl(url);
     if (!url) {
@@ -1211,6 +1232,11 @@ export class CubeField {
     }
 
     if (cell.textureUrl === url && cell.textureLoaded) {
+      return;
+    }
+
+    if (this.isInstanced(cell)) {
+      this.loadAtlasImageForCell(cell, url);
       return;
     }
 
@@ -1279,6 +1305,68 @@ export class CubeField {
         }
       },
     );
+  }
+
+  /** Instanced cubes: the image goes into the shared atlas instead of a texture of its own. */
+  private loadAtlasImageForCell(cell: CubeCell, url: string): void {
+    cell.textureLoaded = false;
+    cell.textureUrl = url;
+    this.instanceRenderer.setImage(
+      cell,
+      url,
+      (aspect) => {
+        cell.textureLoaded = true;
+        cell.textureAspectRatio = Number.isFinite(aspect) ? aspect : null;
+        if (cell === this.selection) this.loadDetailTexture(cell);
+      },
+      () => {
+        console.warn('[CubeField] atlas image failed', { grid: { x: cell.gridX, z: cell.gridZ }, url });
+        const fallbackUrl = this.allowFallbackTextures
+          ? this.pickTextureUrl(cell.gridX * this.config.gridSize + cell.gridZ)
+          : '';
+        if (fallbackUrl && this.normalizeTextureUrl(fallbackUrl) !== url) {
+          this.loadTextureForCell(cell, fallbackUrl);
+        } else {
+          this.clearTextureForCell(cell);
+        }
+      },
+    );
+  }
+
+  /**
+   * The selected cube is drawn by its own mesh with a high-resolution texture
+   * (atlas cells are small); it switches over once that texture has loaded.
+   */
+  private loadDetailTexture(cell: CubeCell): void {
+    if (!cell.textureUrl) {
+      this.instanceRenderer.setDetached(cell, true);
+      return;
+    }
+    const detailUrl = this.withTextureWidth(cell.textureUrl, DETAIL_TEXTURE_WIDTH_PX);
+    const material = cell.material;
+    const texture = new Texture(detailUrl, this.scene, undefined, true, Texture.TRILINEAR_SAMPLINGMODE, () => {
+      if (this.selection !== cell) {
+        texture.dispose();
+        return;
+      }
+      material.diffuseTexture?.dispose();
+      material.diffuseTexture = texture;
+      material.diffuseColor = Color3.White();
+      this.configureTextureForCell(cell, texture);
+      this.applyAspectCrop(cell, texture);
+      this.instanceRenderer.setDetached(cell, true);
+    }, () => {
+      texture.dispose();
+      if (this.selection === cell) this.instanceRenderer.setDetached(cell, true);
+    });
+  }
+
+  private releaseDetailTexture(cell: CubeCell): void {
+    this.instanceRenderer.setDetached(cell, false);
+    const material = cell.material;
+    material.diffuseTexture?.dispose();
+    material.diffuseTexture = null;
+    material.diffuseColor = cell.tintColor.scale(0.4);
   }
 
   private refreshTextureMappings(): void {
@@ -1385,6 +1473,7 @@ export class CubeField {
       cube.textureSidePattern = sidePattern;
       cube.textureMirrorTopBottom = mirrorTopBottom;
     });
+    this.instanceRenderer.setGeometry(this.config.cubeSize, this.computeFaceUVs(sidePattern, mirrorTopBottom));
     this.refreshTextureMappings();
   }
 
@@ -1571,15 +1660,24 @@ export class CubeField {
     };
   }
 
+  private withTextureWidth(url: string, width: number): string {
+    try {
+      const parsed = new URL(url);
+      parsed.searchParams.set('width', String(width));
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
+
   private normalizeTextureUrl(url: string | null | undefined): string {
     if (!url) {
       return '';
     }
     try {
-      const parsed = new URL(url);
       // A cube face is a few hundred pixels at most; 600 px images cost ~4x the
-      // GPU memory for 625 cubes, which a standalone headset cannot afford.
-      parsed.searchParams.set('width', String(CUBE_TEXTURE_WIDTH_PX));
+      // memory for 625 cubes, which a standalone headset cannot afford.
+      const parsed = new URL(this.withTextureWidth(url, CUBE_TEXTURE_WIDTH_PX));
       if (!parsed.searchParams.has('quality')) {
         parsed.searchParams.set('quality', '85');
       }
@@ -1680,6 +1778,7 @@ export class CubeField {
     }
     if (this.selection === cell) return;
     if (this.selection) {
+      if (this.isInstanced(this.selection)) this.releaseDetailTexture(this.selection);
       if (this.physicsActive) {
         this.selection.isBeingDragged = false;
       }
@@ -1692,6 +1791,11 @@ export class CubeField {
       this.selection = cell;
       this.selection.isSelected = true;
       this.selection.selectionProgress = 0;
+      if (this.isInstanced(cell) && cell.textureLoaded) {
+        this.loadDetailTexture(cell);
+      } else if (this.isInstanced(cell) && !cell.textureUrl) {
+        this.instanceRenderer.setDetached(cell, true);
+      }
       if (this.physicsActive) {
         cell.isBeingDragged = false;
         cell.liftAnchor = null;
@@ -1958,6 +2062,7 @@ export class CubeField {
   }
 
   private clearTextureForCell(cell: CubeCell): void {
+    if (this.isInstanced(cell)) this.instanceRenderer.clearImage(cell);
     const material = cell.material;
     if (material.diffuseTexture) {
       material.diffuseTexture.dispose();
