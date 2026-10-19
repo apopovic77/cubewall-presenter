@@ -14,6 +14,8 @@ import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { TextBlock } from '@babylonjs/gui/2D/controls/textBlock';
 import type { CubeContentItem } from '../../types/content';
+import { ArMenuController } from './menu/ArMenuController';
+import type { ArMenuAction, ArMenuState } from './menu/ArMenuModel';
 
 /** Longest side of the cube field when AR starts, in metres. */
 const AR_WALL_SIZE_M = 1.2;
@@ -39,6 +41,10 @@ export interface ArSessionHooks {
   isSelectable(mesh: AbstractMesh | null): boolean;
   /** A controller or hand selected a cube mesh. */
   onSelect(mesh: AbstractMesh): void;
+  /** Toggle states shown on the AR menu. */
+  getMenuState(): ArMenuState;
+  /** Menu actions other than placing the field and leaving AR (handled here). */
+  onMenuAction(action: ArMenuAction): void;
   onStateChange?(active: boolean): void;
 }
 
@@ -84,6 +90,9 @@ export class ArSessionController {
   private framesUntilPlacement = 0;
   private readonly grabs = new Map<XRInputSource, WebXRInputSource>();
   private readonly pendingSelects = new Set<XRInputSource>();
+  /** Input sources whose current select gesture belongs to the menu. */
+  private readonly menuSelects = new Set<XRInputSource>();
+  private menu: ArMenuController | null = null;
   private grabSnapshot: GrabSnapshot | null = null;
   private infoPanel: Mesh | null = null;
   private infoTexture: AdvancedDynamicTexture | null = null;
@@ -155,6 +164,11 @@ export class ArSessionController {
     this.infoPanel.setEnabled(true);
   }
 
+  /** Re-reads the menu's toggle states after a change made outside the menu. */
+  refreshMenu(): void {
+    this.menu?.refresh();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -198,6 +212,10 @@ export class ArSessionController {
     const footprint = Math.max(this.bounds.max.x - this.bounds.min.x, this.bounds.max.z - this.bounds.min.z, 1e-3);
     this.baseScale = AR_WALL_SIZE_M / footprint;
     this.createInfoPanel();
+    this.menu = new ArMenuController(this.scene, xr, {
+      getState: () => this.hooks.getMenuState(),
+      onAction: (action) => this.handleMenuAction(action),
+    });
 
     const session = xr.baseExperience.sessionManager.session;
     session.addEventListener('selectstart', this.handleSelectStart);
@@ -228,6 +246,9 @@ export class ArSessionController {
     this.frameObserver = null;
     this.grabs.clear();
     this.pendingSelects.clear();
+    this.menuSelects.clear();
+    this.menu?.dispose();
+    this.menu = null;
     this.grabSnapshot = null;
 
     this.fieldRoot.parent = null;
@@ -269,9 +290,23 @@ export class ArSessionController {
     return this.xr.pointerSelection.getMeshUnderPointer(controller.uniqueId);
   }
 
+  private handleMenuAction(action: ArMenuAction): void {
+    if (action === 'place-field') {
+      this.placeInFrontOfViewer();
+    } else if (action === 'exit-ar') {
+      void this.exit();
+    } else {
+      this.hooks.onMenuAction(action);
+    }
+  }
+
   private readonly handleSelectStart = (event: XRInputSourceEvent): void => {
     const controller = this.controllerFor(event.inputSource);
     if (!controller) return;
+    if (this.menu?.capturesSelect(controller)) {
+      this.menuSelects.add(event.inputSource);
+      return;
+    }
     if (this.hooks.isSelectable(this.meshUnderPointer(controller))) {
       this.pendingSelects.add(event.inputSource);
     } else {
@@ -280,6 +315,11 @@ export class ArSessionController {
   };
 
   private readonly handleSelect = (event: XRInputSourceEvent): void => {
+    if (this.menuSelects.has(event.inputSource)) {
+      const controller = this.controllerFor(event.inputSource);
+      if (controller) this.menu?.handleSelect(controller);
+      return;
+    }
     if (!this.pendingSelects.delete(event.inputSource)) return;
     const mesh = this.meshUnderPointer(this.controllerFor(event.inputSource));
     if (mesh && this.hooks.isSelectable(mesh)) this.hooks.onSelect(mesh);
@@ -287,6 +327,7 @@ export class ArSessionController {
 
   private readonly handleSelectEnd = (event: XRInputSourceEvent): void => {
     this.pendingSelects.delete(event.inputSource);
+    this.menuSelects.delete(event.inputSource);
     this.endGrab(event.inputSource);
   };
 

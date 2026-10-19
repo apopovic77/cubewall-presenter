@@ -23,6 +23,7 @@ import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
+import type { ArMenuAction } from './engine/xr/menu/ArMenuModel';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -830,6 +831,61 @@ export default function App() {
     [apiBaseUrl, contentProviderId, contentStats.itemCount, contentStats.lastRefreshIso, storageBaseUrl],
   );
 
+  /** Shared by keyboard shortcuts and the AR menu. */
+  const runAction = useCallback(
+    (action: ArMenuAction) => {
+      const presenter = presenterRef.current;
+      switch (action) {
+        case 'layout-matrix':
+          applyLayoutPreset(MATRIX_LAYOUT_OVERRIDE);
+          break;
+        case 'layout-masonry':
+          applyLayoutPreset(MASONRY_LAYOUT_OVERRIDE);
+          break;
+        case 'layout-axis':
+          applyLayoutPreset(AXIS_LAYOUT_OVERRIDE);
+          break;
+        case 'auto-rotate':
+          presenter?.toggleFieldAutoRotation();
+          break;
+        case 'morph':
+          presenter?.startFieldMorph();
+          break;
+        case 'line-wave':
+          presenter?.triggerLineWaveField();
+          break;
+        case 'wave-position':
+          setSettings((prev) => (prev ? { ...prev, wavePositionEnabled: !prev.wavePositionEnabled } : prev));
+          break;
+        case 'wave-rotation':
+          setSettings((prev) => (prev ? { ...prev, waveRotationEnabled: !prev.waveRotationEnabled } : prev));
+          break;
+        case 'physics-cycle':
+          void presenter?.triggerPhysicsDrop().then(() => presenter.refreshArMenu());
+          break;
+        case 'next-cube':
+          presenter?.selectNextCube();
+          break;
+        case 'random-cube':
+          presenter?.selectRandomCube();
+          break;
+        default:
+          break;
+      }
+    },
+    [applyLayoutPreset],
+  );
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  // Stable identity: CanvasStage recreates the presenter when its callbacks change.
+  const handleArMenuAction = useCallback((action: ArMenuAction) => runActionRef.current(action), []);
+
+  useEffect(() => {
+    // After this render's effects have synced appConfig from the new settings.
+    const timer = window.setTimeout(() => presenterRef.current?.refreshArMenu(), 0);
+    return () => window.clearTimeout(timer);
+  }, [settings, layoutOverride]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === '1') {
@@ -837,48 +893,23 @@ export default function App() {
         toggleGeometryMode();
         return;
       }
-      if (event.key === '2') {
+      const keyActions: Record<string, ArMenuAction> = {
+        '2': 'wave-position',
+        '3': 'wave-rotation',
+        '4': 'layout-matrix',
+        '5': 'layout-masonry',
+        F3: 'physics-cycle',
+        F7: 'morph',
+        F8: 'line-wave',
+        n: 'next-cube',
+        N: 'next-cube',
+        m: 'random-cube',
+        M: 'random-cube',
+      };
+      const action = keyActions[event.key];
+      if (action) {
         event.preventDefault();
-        let nextWavePosition = false;
-        setSettings((prev) => {
-          if (!prev) return prev;
-          nextWavePosition = !prev.wavePositionEnabled;
-          return {
-            ...prev,
-            wavePositionEnabled: nextWavePosition,
-          };
-        });
-        console.info(
-          `[CubeWallPresenter] Wave motion ${nextWavePosition ? 'enabled' : 'disabled'} via shortcut.`,
-        );
-        return;
-      }
-      if (event.key === '3') {
-        event.preventDefault();
-        let nextWaveRotation = false;
-        setSettings((prev) => {
-          if (!prev) return prev;
-          nextWaveRotation = !prev.waveRotationEnabled;
-          return {
-            ...prev,
-            waveRotationEnabled: nextWaveRotation,
-          };
-        });
-        console.info(
-          `[CubeWallPresenter] Wave rotation ${nextWaveRotation ? 'enabled' : 'disabled'} via shortcut.`,
-        );
-        return;
-      }
-      if (event.key === '4') {
-        event.preventDefault();
-        console.debug('[CubeWallPresenter] Layout preset -> matrix (shortcut)');
-        applyLayoutPreset(MATRIX_LAYOUT_OVERRIDE);
-        return;
-      }
-      if (event.key === '5') {
-        event.preventDefault();
-        console.debug('[CubeWallPresenter] Layout preset -> masonry (shortcut)');
-        applyLayoutPreset(MASONRY_LAYOUT_OVERRIDE);
+        runAction(action);
         return;
       }
       if (event.key === 'F1') {
@@ -887,10 +918,6 @@ export default function App() {
       }
       if (event.key === 'Escape') {
         setIsSettingsOpen(false);
-      }
-      if (event.key === 'F3') {
-        event.preventDefault();
-        void presenterRef.current?.triggerPhysicsDrop();
       }
       if (event.key === 'F4') {
         event.preventDefault();
@@ -914,14 +941,6 @@ export default function App() {
         } else {
           presenterRef.current?.toggleFieldAutoRotation();
         }
-      }
-      if (event.key === 'F7') {
-        event.preventDefault();
-        presenterRef.current?.startFieldMorph();
-      }
-      if (event.key === 'F8') {
-        event.preventDefault();
-        presenterRef.current?.triggerLineWaveField();
       }
       if (event.key === 'F9') {
         event.preventDefault();
@@ -964,19 +983,10 @@ export default function App() {
         toggleGeometryMode();
         return;
       }
-      if (event.key.toLowerCase() === 'n') {
-        event.preventDefault();
-        presenterRef.current?.selectNextCube();
-        return;
-      }
-      if (event.key.toLowerCase() === 'm') {
-        event.preventDefault();
-        presenterRef.current?.selectRandomCube();
-      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [applyLayoutPreset, toggleGeometryMode]);
+  }, [applyLayoutPreset, runAction, toggleGeometryMode]);
 
   const effectiveLayoutMode =
     layoutOverride?.mode ??
@@ -1029,6 +1039,7 @@ export default function App() {
         onBillboardStateChange={handleBillboardStateChange}
         onAxisLabelsChange={setAxisLabels}
         onCameraSettingsChange={handleSettingsChange}
+        onArMenuAction={handleArMenuAction}
       />
       <ArButton getPresenter={getPresenter} />
       {settings.billboardMode === 'html' && billboardState && (

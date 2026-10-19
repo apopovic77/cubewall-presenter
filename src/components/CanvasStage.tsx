@@ -4,6 +4,7 @@ import type { CubeSelectionInfo } from '../engine/CubeField';
 import { CubeWallPresenter } from '../engine/CubeWallPresenter';
 import type { PresenterSettings } from '../config/PresenterSettings';
 import type { AxisLabelDisplayState, BillboardDisplayState } from '../engine/CubeWallPresenter';
+import type { ArMenuAction } from '../engine/xr/menu/ArMenuModel';
 
 export interface CanvasStageProps {
   onSelectionChange?: (selection: CubeSelectionInfo | null) => void;
@@ -13,6 +14,7 @@ export interface CanvasStageProps {
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
   onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
   onCameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
+  onArMenuAction?: (action: ArMenuAction) => void;
 }
 
 export function CanvasStage({
@@ -23,6 +25,7 @@ export function CanvasStage({
   onBillboardStateChange,
   onAxisLabelsChange,
   onCameraSettingsChange,
+  onArMenuAction,
 }: CanvasStageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const presenterRef = useRef<CubeWallPresenter | null>(null);
@@ -40,6 +43,7 @@ export function CanvasStage({
       onBillboardStateChange,
       onAxisLabelsChange,
       onCameraSettingsChange,
+      onArMenuAction,
     });
     presenter.applySettings(settings);
     presenterRef.current = presenter;
@@ -53,7 +57,7 @@ export function CanvasStage({
       onBillboardStateChange?.(null);
       onAxisLabelsChange?.([]);
     };
-  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange, onAxisLabelsChange, onCameraSettingsChange]);
+  }, [onSelectionChange, onPresenterReady, onDebug, onBillboardStateChange, onAxisLabelsChange, onCameraSettingsChange, onArMenuAction]);
 
   useEffect(() => {
     presenterRef.current?.applySettings(settings);

@@ -27,6 +27,7 @@ import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 import { CameraOrbitController } from './CameraOrbitController';
 import { ArSessionController } from './xr/ArSessionController';
+import type { ArMenuAction, ArMenuState } from './xr/menu/ArMenuModel';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { BILLBOARD_FADE_SECONDS } from '../config/BillboardConstants';
 
@@ -146,11 +147,14 @@ export interface CubeWallPresenterOptions {
   onBillboardStateChange?: (state: BillboardDisplayState | null) => void;
   onAxisLabelsChange?: (labels: AxisLabelDisplayState[]) => void;
   onCameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
+  /** AR menu actions that the host maps to the same handlers as its keyboard shortcuts. */
+  onArMenuAction?: (action: ArMenuAction) => void;
 }
 
 export class CubeWallPresenter {
   private readonly sceneController: SceneController;
   private readonly arController: ArSessionController;
+  private readonly arMenuAction?: (action: ArMenuAction) => void;
   private readonly engine: Engine;
   private readonly scene: Scene;
   private readonly cubeField: CubeField;
@@ -337,7 +341,9 @@ export class CubeWallPresenter {
     onBillboardStateChange,
     onAxisLabelsChange,
     onCameraSettingsChange,
+    onArMenuAction,
   }: CubeWallPresenterOptions) {
+    this.arMenuAction = onArMenuAction;
     this.config = config;
     this.canvasElement = canvas;
     this.sceneController = new SceneController({ canvas, config: this.config });
@@ -348,6 +354,8 @@ export class CubeWallPresenter {
       setPassthrough: (active) => this.sceneController.setPassthrough(active),
       isSelectable: (mesh) => this.cubeField.getCellFromMesh(mesh) !== null,
       onSelect: (mesh) => this.selectFromAr(mesh),
+      getMenuState: () => this.getArMenuState(),
+      onMenuAction: (action) => this.arMenuAction?.(action),
     });
     this.selectionChange = onSelectionChange;
     this.debug = onDebug;
@@ -772,6 +780,21 @@ export class CubeWallPresenter {
 
   public exitAr(): Promise<void> {
     return this.arController.exit();
+  }
+
+  private getArMenuState(): ArMenuState {
+    return {
+      layoutMode: this.config.layout.mode,
+      autoRotate: this.cubeField.isFieldAutoRotating(),
+      wavePosition: this.config.wavePositionEnabled,
+      waveRotation: this.config.waveRotationEnabled,
+      physicsMode: this.physicsMode,
+    };
+  }
+
+  /** Call after state shown on the AR menu changed outside it (settings, shortcuts). */
+  public refreshArMenu(): void {
+    this.arController.refreshMenu();
   }
 
   private selectFromAr(mesh: AbstractMesh): void {

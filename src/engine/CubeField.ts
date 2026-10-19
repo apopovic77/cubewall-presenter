@@ -422,6 +422,10 @@ export class CubeField {
     return true;
   }
 
+  public isFieldAutoRotating(): boolean {
+    return this.fieldAutoRotateActive;
+  }
+
   public toggleFieldAutoRotation(): boolean {
     this.fieldAutoRotateActive = !this.fieldAutoRotateActive;
     if (this.fieldAutoRotateActive) {
