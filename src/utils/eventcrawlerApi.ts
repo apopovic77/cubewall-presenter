@@ -54,6 +54,19 @@ const EVENTCRAWLER_API_BASE_URL =
   (import.meta.env.VITE_EVENTCRAWLER_API_URL as string | undefined)?.replace(/\/+$/, '') ??
   'https://eventcrawler-api.arkturian.com';
 
+/**
+ * Eventcrawler project whose events fill the wall. `?project=<slug>` in the page
+ * URL overrides VITE_EVENTCRAWLER_PROJECT_SLUG; 'default' is the Koralmbahn project.
+ */
+function resolveProjectSlug(): string {
+  const fromUrl =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('project') : null;
+  const fromEnv = import.meta.env.VITE_EVENTCRAWLER_PROJECT_SLUG as string | undefined;
+  return (fromUrl || fromEnv || 'default').trim();
+}
+
+const EVENTCRAWLER_PROJECT_SLUG = resolveProjectSlug();
+
 const STORAGE_BASE_URL =
   (import.meta.env.VITE_STORAGE_API_URL as string | undefined)?.replace(/\/+$/, '') ??
   'https://api-storage.arkturian.com';
@@ -179,6 +192,7 @@ async function fetchEventsPage(
   const url = new URL(`${EVENTCRAWLER_API_BASE_URL}/api/v1/events/`);
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('offset', String(offset));
+  url.searchParams.set('project_slug', EVENTCRAWLER_PROJECT_SLUG);
 
   console.info(`[EventCrawler] fetchEventsPage limit=${limit} offset=${offset} url=${url}`);
 
@@ -197,10 +211,7 @@ async function fetchEventsPage(
   }
 
   if (!response.ok) {
-    console.warn(
-      `[EventCrawler] request failed (${response.status}) at offset=${offset} limit=${limit}`
-    );
-    return [];
+    throw new Error(`EventCrawler events API failed: ${response.status} (offset=${offset})`);
   }
 
   const events = (await response.json()) as EventResponse[];
@@ -230,7 +241,9 @@ export async function fetchEventCrawlerContent(
     try {
       events = await fetchEventsPage(pageLimit, offset, options?.signal);
     } catch (error) {
-      console.warn('[EventCrawler] failed to fetch page – aborting pagination.', error);
+      // Without a single page the wall would just look empty; surface it as an error.
+      if (collected.length === 0) throw error;
+      console.warn('[EventCrawler] failed to fetch page – keeping the pages loaded so far.', error);
       break;
     }
 
@@ -282,6 +295,7 @@ export async function fetchEventChanges(
 ): Promise<EventChangesResponse> {
   const url = new URL(`${EVENTCRAWLER_API_BASE_URL}/api/v1/events/changes`);
   url.searchParams.set('since', since);
+  url.searchParams.set('project_slug', EVENTCRAWLER_PROJECT_SLUG);
 
   const response = await fetch(url.toString(), {
     cache: 'no-store',

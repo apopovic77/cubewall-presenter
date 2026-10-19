@@ -22,19 +22,9 @@ const PROVIDERS: Record<ContentProviderId, ProviderLoader> = {
 export async function loadCubeContent(providerId?: string): Promise<CubeContentLoadResult> {
   const normalized = providerId?.toLowerCase() ?? 'default';
   const provider = (PROVIDERS as Record<string, ProviderLoader>)[normalized] ?? PROVIDERS.default;
-  try {
-    return await provider();
-  } catch (error) {
-    console.warn(`[CubeContent] provider "${normalized}" failed, falling back to default.`, error);
-    if (provider !== PROVIDERS.default) {
-      try {
-        return await PROVIDERS.default();
-      } catch (fallbackError) {
-        console.error('[CubeContent] default provider failed.', fallbackError);
-      }
-    }
-    return { items: [], layout: undefined };
-  }
+  // Errors propagate so the app can show its error state and retry; falling back
+  // to the (empty) default provider would make an outage look like "no content".
+  return provider();
 }
 
 export function resolveContentProviderId(): ContentProviderId {
