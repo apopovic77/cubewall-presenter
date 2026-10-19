@@ -28,6 +28,8 @@ const AR_BELOW_EYE_M = 0.5;
 /** Two-hand scaling limits, relative to the start size. */
 const AR_MIN_SCALE_FACTOR = 0.15;
 const AR_MAX_SCALE_FACTOR = 6;
+/** Size change per "Feld größer / kleiner" press. */
+const MENU_SCALE_STEP = 1.3;
 /** XR frames to wait for a valid head pose before the first placement. */
 const AR_PLACEMENT_FRAME_DELAY = 6;
 
@@ -332,6 +334,10 @@ export class ArSessionController {
   private handleMenuAction(action: ArMenuAction): void {
     if (action === 'place-field') {
       this.placeInFrontOfViewer();
+    } else if (action === 'field-bigger') {
+      this.scaleField(MENU_SCALE_STEP);
+    } else if (action === 'field-smaller') {
+      this.scaleField(1 / MENU_SCALE_STEP);
     } else if (action === 'exit-ar') {
       void this.exit();
     } else {
@@ -346,6 +352,9 @@ export class ArSessionController {
       this.menuSelects.add(event.inputSource);
       return;
     }
+    // Second hand pinching while the first one aims at the field: both grab the
+    // field (move / scale / turn), whatever cube the rays happen to hit.
+    if (this.convertToTwoHandGrab(event.inputSource, controller)) return;
     const nearCube = this.hooks.findCubeNear(this.grabPoint(controller), NEAR_GRAB_MARGIN_M);
     if (nearCube) {
       this.startCubeHold(event.inputSource, controller, nearCube, 'grip');
@@ -402,6 +411,41 @@ export class ArSessionController {
       this.endGrab(source);
     });
   };
+
+  /**
+   * If another input source is already pressed on the field (a pending ray
+   * pick, a cube on the ray, or a field grab), turn both into a field grab.
+   * A cube held right in the other hand stays held.
+   */
+  private convertToTwoHandGrab(source: XRInputSource, controller: WebXRInputSource): boolean {
+    const other = [
+      ...this.pendingRayPicks.keys(),
+      ...[...this.cubeHolds.entries()].filter(([, hold]) => hold.via === 'ray').map(([key]) => key),
+      ...this.grabs.keys(),
+    ].find((candidate) => candidate !== source);
+    if (!other) return false;
+    const otherController = this.controllerFor(other);
+    if (!otherController) return false;
+    this.pendingRayPicks.delete(other);
+    this.endCubeHold(other);
+    if (!this.grabs.has(other)) this.startGrab(other, otherController);
+    this.startGrab(source, controller);
+    return true;
+  }
+
+  /** Menu "Feld größer / kleiner": scales about the field's centre. */
+  private scaleField(factor: number): void {
+    const anchor = this.anchor;
+    const bounds = this.bounds;
+    if (!anchor || !bounds) return;
+    const pivot = Vector3.TransformCoordinates(bounds.center, anchor.computeWorldMatrix(true));
+    const current = anchor.scaling.x;
+    const next = Math.min(this.baseScale * AR_MAX_SCALE_FACTOR, Math.max(this.baseScale * AR_MIN_SCALE_FACTOR, current * factor));
+    const ratio = next / current;
+    anchor.scaling.setAll(next);
+    anchor.position.copyFrom(pivot.add(anchor.position.subtract(pivot).scale(ratio)));
+    this.grabSnapshot = null;
+  }
 
   // --- holding cubes ----------------------------------------------------------
 

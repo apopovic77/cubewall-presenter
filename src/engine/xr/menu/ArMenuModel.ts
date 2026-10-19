@@ -21,6 +21,8 @@ export type ArMenuAction =
   | 'next-cube'
   | 'random-cube'
   | 'place-field'
+  | 'field-bigger'
+  | 'field-smaller'
   | 'exit-ar';
 
 export type ArPhysicsMode = 'off' | 'classic' | 'anchor';
@@ -56,12 +58,12 @@ export interface ArMenuSection {
 }
 
 const PADDING = 48;
-const GAP = 14;
+const GAP = 12;
 const HALF_WIDTH = (AR_MENU_CANVAS_PX - PADDING * 2 - GAP) / 2;
 const FULL_WIDTH = AR_MENU_CANVAS_PX - PADDING * 2;
-const ROW_HEIGHT = 96;
+const ROW_HEIGHT = 86;
 const SECTION_TITLE_HEIGHT = 40;
-const TITLE_BLOCK_HEIGHT = 92;
+const TITLE_BLOCK_HEIGHT = 84;
 
 const PHYSICS_LABELS: Record<ArPhysicsMode, string> = {
   off: 'Aus · antippen: fallen lassen',
@@ -98,6 +100,7 @@ function rows(state: ArMenuState): RowSpec[] {
       section: 'Würfel und Feld',
       cells: [item('next-cube', 'Nächster Würfel'), item('random-cube', 'Zufälliger Würfel')],
     },
+    { cells: [item('field-smaller', 'Feld kleiner'), item('field-bigger', 'Feld größer')] },
     { cells: [item('place-field', 'Feld vor mich'), item('exit-ar', 'AR beenden', false, undefined, 'danger')] },
   ];
 }
