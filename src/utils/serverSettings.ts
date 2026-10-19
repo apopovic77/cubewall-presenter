@@ -6,7 +6,28 @@ function resolveSettingsEndpoint(): string {
     return explicitEndpoint;
   }
 
-  return 'https://cubewall.arkturian.com/settings';
+  // Production is served next to the store; dev reads the production store.
+  return import.meta.env.DEV ? 'https://cubewall.arkturian.com/settings' : '/settings';
+}
+
+/**
+ * Dev sessions must not overwrite the kiosks' production settings unless a
+ * settings endpoint was configured explicitly (e.g. a local settings server).
+ */
+const CAN_WRITE_SETTINGS = !import.meta.env.DEV || Boolean(import.meta.env.VITE_SETTINGS_API_URL);
+
+const SAVE_DEBOUNCE_MS = 800;
+const SETTINGS_TOKEN_STORAGE_KEY = 'cwSettingsToken';
+
+let pendingSave: ReturnType<typeof setTimeout> | null = null;
+
+/** Write token for a server started with SETTINGS_WRITE_TOKEN (stored once per browser). */
+function readSettingsToken(): string | null {
+  try {
+    return window.localStorage.getItem(SETTINGS_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 function isValidSettings(payload: unknown): payload is PresenterSettings {
@@ -29,18 +50,28 @@ export async function loadServerSettings(): Promise<PresenterSettings | null> {
   }
 }
 
-export async function saveServerSettings(settings: PresenterSettings): Promise<void> {
+async function putServerSettings(settings: PresenterSettings): Promise<void> {
   const endpoint = resolveSettingsEndpoint();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = readSettingsToken();
+  if (token) headers['X-Settings-Token'] = token;
   try {
-    await fetch(endpoint, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(settings),
-    });
+    const response = await fetch(endpoint, { method: 'PUT', headers, body: JSON.stringify(settings) });
+    if (!response.ok) {
+      console.warn(`[SettingsAPI] Server rejected settings (${response.status}).`);
+    }
   } catch (error) {
     console.warn('[SettingsAPI] Failed to persist settings to server.', error);
   }
+}
+
+/** Debounced: slider drags and camera moves collapse into one write. */
+export function saveServerSettings(settings: PresenterSettings): void {
+  if (!CAN_WRITE_SETTINGS) return;
+  if (pendingSave) clearTimeout(pendingSave);
+  pendingSave = setTimeout(() => {
+    pendingSave = null;
+    void putServerSettings(settings);
+  }, SAVE_DEBOUNCE_MS);
 }
 

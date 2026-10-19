@@ -8,18 +8,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_FILE = path.join(__dirname, 'settings.json');
 
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '256kb' }));
+// Browsers may only call the store from these origins (comma-separated list in ALLOWED_ORIGINS).
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'https://cubewall.arkturian.com,http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-async function ensureDataFile() {
-  try {
-    await fs.access(DATA_FILE);
-  } catch (error) {
-    await fs.writeFile(DATA_FILE, '{}', 'utf8');
-    console.log(`[SettingsServer] Created data store at ${DATA_FILE}`);
-  }
-}
+// Optional shared secret: when set, PUT requires the header `X-Settings-Token`.
+const WRITE_TOKEN = process.env.SETTINGS_WRITE_TOKEN ?? '';
+
+const app = express();
+app.use(cors({ origin: ALLOWED_ORIGINS }));
+app.use(express.json({ limit: '256kb' }));
 
 async function readSettings() {
   try {
@@ -27,30 +27,56 @@ async function readSettings() {
     if (!raw.trim()) return {};
     return JSON.parse(raw);
   } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('[SettingsServer] Failed to read settings.', error);
+    }
     return {};
   }
 }
 
-async function writeSettings(settings) {
-  await fs.writeFile(DATA_FILE, JSON.stringify(settings, null, 2), 'utf8');
+// Writes are serialized and atomic (temp file + rename), so concurrent PUTs or a
+// crash mid-write can never leave a truncated settings.json behind.
+let writeQueue = Promise.resolve();
+
+function writeSettings(settings) {
+  const run = async () => {
+    const tmpFile = `${DATA_FILE}.${process.pid}.tmp`;
+    await fs.writeFile(tmpFile, JSON.stringify(settings, null, 2), 'utf8');
+    await fs.rename(tmpFile, DATA_FILE);
+  };
+  writeQueue = writeQueue.then(run, run);
+  return writeQueue;
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 app.get('/settings', async (req, res) => {
-  await ensureDataFile();
-  const settings = await readSettings();
-  res.json(settings);
+  res.json(await readSettings());
 });
 
 app.put('/settings', async (req, res) => {
-  await ensureDataFile();
-  const incoming = req.body ?? {};
-  await writeSettings(incoming);
-  console.log('[SettingsServer] Settings updated');
-  res.status(204).send();
+  if (WRITE_TOKEN && req.get('X-Settings-Token') !== WRITE_TOKEN) {
+    res.status(401).json({ error: 'invalid_token' });
+    return;
+  }
+  const incoming = req.body;
+  if (!isPlainObject(incoming)) {
+    res.status(400).json({ error: 'settings_must_be_object' });
+    return;
+  }
+  try {
+    await writeSettings(incoming);
+    console.log('[SettingsServer] Settings updated');
+    res.status(204).send();
+  } catch (error) {
+    console.error('[SettingsServer] Failed to write settings.', error);
+    res.status(500).json({ error: 'write_failed' });
+  }
 });
 
 const PORT = process.env.PORT ?? 5001;
 app.listen(PORT, () => {
   console.log(`[SettingsServer] Listening on http://0.0.0.0:${PORT}/settings`);
 });
-
