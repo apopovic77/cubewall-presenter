@@ -69,6 +69,10 @@ export class FieldLayoutEngine {
     return this.fields.length;
   }
 
+  public getFieldId(index: number): string | null {
+    return this.fields[index]?.id ?? null;
+  }
+
   public findFieldIndex(id: string): number {
     return this.fields.findIndex((field) => field.id === id);
   }

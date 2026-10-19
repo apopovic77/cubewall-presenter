@@ -586,6 +586,10 @@ export default function App() {
   const getPresenter = useCallback(() => presenterRef.current, []);
 
   const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
+    // `?debug` exposes the presenter for console / automated checks.
+    if (new URLSearchParams(window.location.search).has('debug')) {
+      (window as unknown as { __cubewall?: CubeWallPresenter | null }).__cubewall = presenter;
+    }
     console.info('[CubeWallInit] handlePresenterReady', { presenterReady: Boolean(presenter) });
     presenterRef.current = presenter;
     if (presenter && contentItemsRef.current.length > 0) {

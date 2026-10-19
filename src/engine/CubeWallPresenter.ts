@@ -308,6 +308,16 @@ export class CubeWallPresenter {
     this.debug?.('[Physics] Mode: off');
   }
 
+  /** Debug/inspection: mean world position of all cubes. */
+  public debugFieldCentroid(): { x: number; y: number; z: number; spread: number } {
+    const cells = this.cubeField.getAllCells();
+    const sum = Vector3.Zero();
+    cells.forEach((cell) => sum.addInPlace(cell.mesh.getAbsolutePosition()));
+    const mean = sum.scale(1 / Math.max(1, cells.length));
+    const spread = cells.reduce((acc, cell) => acc + Vector3.Distance(cell.mesh.getAbsolutePosition(), mean), 0) / Math.max(1, cells.length);
+    return { x: mean.x, y: mean.y, z: mean.z, spread };
+  }
+
   public getPhysicsMode(): 'off' | 'classic' | 'anchor' {
     return this.physicsMode;
   }

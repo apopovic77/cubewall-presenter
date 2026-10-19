@@ -35,7 +35,8 @@ const KILL_DEPTH = 30;
 /** Response rate (1/s) of animated targets (selection lift, drag) and of the anchor steering. */
 const TARGET_FOLLOW_RATE = 10;
 const ANCHOR_SPRING = 6;
-const ANCHOR_MAX_SPEED = 8;
+/** Field units per second; morph targets can be far away (sphere, helix), so this is generous. */
+const ANCHOR_MAX_SPEED = 40;
 const ANCHOR_SPIN_GAIN = 4;
 
 let havokModule: Promise<unknown> | null = null;
@@ -125,7 +126,14 @@ export class FieldPhysics {
   }
 
   setMode(mode: FieldPhysicsMode): void {
-    if (this.currentMode) this.currentMode = mode;
+    if (!this.currentMode) return;
+    this.currentMode = mode;
+    this.bodies.forEach((entry) => this.applyGravity(entry));
+  }
+
+  /** Anchor mode floats the cubes into the layout (no sag); classic mode lets them fall. */
+  private applyGravity(entry: CubeBody): void {
+    entry.body.setGravityFactor(this.currentMode === 'anchor' ? 0 : 1);
   }
 
   /** Stops the simulation; cubes keep their current pose. */
@@ -150,6 +158,7 @@ export class FieldPhysics {
       if (!cube.mesh.isEnabled()) return;
       const created = this.createBody(cube);
       minY = Math.min(minY, created.node.position.y);
+      this.applyGravity(created);
       this.bodies.set(cube, created);
     });
     const half = this.config.cubeSize / 2;

@@ -366,7 +366,10 @@ export class CubeField {
       return null;
     }
     const currentIndex = this.fieldEngine.getCurrentFieldIndex();
-    const nextIndex = (currentIndex + 1) % total;
+    // The wave line (all cubes in one row, ~700 units for 625 cubes) has its own
+    // action (F8); in the morph cycle it just sends everything out of view.
+    let nextIndex = (currentIndex + 1) % total;
+    if (this.fieldEngine.getFieldId(nextIndex) === 'line') nextIndex = (nextIndex + 1) % total;
     this.fieldEngine.startMorphTo(nextIndex, this.fieldMorphDurationSeconds);
     const current = this.fieldEngine.getCurrentField().name;
     const next = this.fieldEngine.getNextField().name;
