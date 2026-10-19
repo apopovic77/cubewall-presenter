@@ -22,6 +22,7 @@ import type { AxisLabelDisplayState, BillboardDisplayState, BillboardScreenMetri
 import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
+import { ArButton } from './components/ArButton';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -580,6 +581,8 @@ export default function App() {
     void applyContentToPresenter(contentItemsRef.current, contentLayoutRef.current ?? undefined);
   }, [applyContentToPresenter]);
 
+  const getPresenter = useCallback(() => presenterRef.current, []);
+
   const handlePresenterReady = useCallback((presenter: CubeWallPresenter | null) => {
     console.info('[CubeWallInit] handlePresenterReady', { presenterReady: Boolean(presenter) });
     presenterRef.current = presenter;
@@ -1027,6 +1030,7 @@ export default function App() {
         onAxisLabelsChange={setAxisLabels}
         onCameraSettingsChange={handleSettingsChange}
       />
+      <ArButton getPresenter={getPresenter} />
       {settings.billboardMode === 'html' && billboardState && (
         <HtmlBillboard state={billboardState} settings={settings} onLayout={handleBillboardLayout} />
       )}

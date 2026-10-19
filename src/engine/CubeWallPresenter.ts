@@ -26,6 +26,8 @@ import { Effect } from '@babylonjs/core/Materials/effect';
 import { Axis3DLabelManager, type AxisLabelData } from './Axis3DLabelManager';
 import type { CubeContentItem } from '../types/content';
 import { CameraOrbitController } from './CameraOrbitController';
+import { ArSessionController } from './xr/ArSessionController';
+import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { BILLBOARD_FADE_SECONDS } from '../config/BillboardConstants';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -148,6 +150,7 @@ export interface CubeWallPresenterOptions {
 
 export class CubeWallPresenter {
   private readonly sceneController: SceneController;
+  private readonly arController: ArSessionController;
   private readonly engine: Engine;
   private readonly scene: Scene;
   private readonly cubeField: CubeField;
@@ -341,6 +344,10 @@ export class CubeWallPresenter {
     this.engine = this.sceneController.getEngine();
     this.scene = this.sceneController.getScene();
     this.cubeField = new CubeField(this.scene, this.config);
+    this.arController = new ArSessionController(this.scene, this.cubeField.getRootNode(), {
+      setPassthrough: (active) => this.sceneController.setPassthrough(active),
+      onSelect: (mesh) => this.selectFromAr(mesh),
+    });
     this.selectionChange = onSelectionChange;
     this.debug = onDebug;
     this.billboardStateChange = onBillboardStateChange;
@@ -465,6 +472,8 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERPICK: {
           this.logDebug('POINTERPICK');
+          // In AR, selection comes from the XR 'select' event (see selectFromAr).
+          if (this.arController.isActive) break;
           if (pointerDownInfo && pendingPick) {
             break;
           }
@@ -588,6 +597,7 @@ export class CubeWallPresenter {
         }
         case PointerEventTypes.POINTERTAP: {
           this.logDebug('POINTERTAP');
+          if (this.arController.isActive) break;
           if (pointerClickHandled) {
             pointerClickHandled = false;
             pendingPick = null;
@@ -741,6 +751,35 @@ export class CubeWallPresenter {
     this.applySelection(cell, mesh.name);
     }
 
+  /** True when the browser can start an immersive-AR session (e.g. Meta Quest). */
+  public static isArSupported(): Promise<boolean> {
+    return ArSessionController.isSupportedAsync();
+  }
+
+  public isArActive(): boolean {
+    return this.arController.isActive;
+  }
+
+  public prepareAr(): Promise<void> {
+    return this.arController.prepare();
+  }
+
+  /** Starts AR with passthrough. Must be called from a user gesture. */
+  public enterAr(): Promise<void> {
+    return this.arController.enter();
+  }
+
+  public exitAr(): Promise<void> {
+    return this.arController.exit();
+  }
+
+  /** Pointing into the room (no cube hit) keeps the current selection. */
+  private selectFromAr(mesh: AbstractMesh | null): void {
+    const cell = this.cubeField.getCellFromMesh(mesh);
+    if (!cell) return;
+    this.applySelection(cell, mesh?.name);
+  }
+
   private applySelection(cell: CubeCell, meshName?: string): void {
     const alreadySelected = cell.isSelected;
     this.logDebug(`handlePick: ${meshName ?? cell.mesh.name} -> ${alreadySelected ? 'deselect' : 'select'}`);
@@ -818,6 +857,7 @@ export class CubeWallPresenter {
     const animate = options?.animate ?? true;
     const reason = options?.reason ?? 'system';
     const manualActive = this.cameraController.isManualOverrideActive();
+    this.arController.showContent(cell?.content ?? null);
 
     if (!cell) {
       this.billboardOverlay.deselect(animate);
@@ -1445,6 +1485,7 @@ export class CubeWallPresenter {
       this.wheelListener = null;
     }
     this.disposeHtmlConnectorResources();
+    this.arController.dispose();
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
     this.sceneController.dispose();

@@ -1645,6 +1645,11 @@ export class CubeField {
     return candidates[index];
   }
 
+  /** Parent of all cubes; layouts move and rotate it. */
+  public getRootNode(): TransformNode {
+    return this.root;
+  }
+
   public getCellFromMesh(mesh: AbstractMesh | null | undefined): CubeCell | null {
     if (!mesh || !mesh.metadata) return null;
     const { gridX, gridZ } = mesh.metadata as { gridX: number; gridZ: number };

@@ -185,6 +185,23 @@ export class SceneController {
     this.scene.clearColor = Color4.FromColor3(Color3.Black(), 1);
   }
 
+  /**
+   * AR passthrough: the room must show through, so the background is cleared to
+   * transparent and post-processing (depth of field) is switched off.
+   */
+  public setPassthrough(active: boolean): void {
+    if (active) {
+      this.scene.clearColor = new Color4(0, 0, 0, 0);
+      if (this.gradientLayer) this.gradientLayer.isEnabled = false;
+      if (this.renderingPipeline) this.renderingPipeline.depthOfFieldEnabled = false;
+      this.scene.disableDepthRenderer(this.camera);
+      return;
+    }
+    if (this.gradientLayer) this.gradientLayer.isEnabled = true;
+    this.updateBackgroundFromConfig();
+    this.updateDepthOfFieldFromConfig();
+  }
+
   private createGradientTexture(topHex: string, bottomHex: string): Texture {
     const dynamicTexture = new DynamicTexture('cwGradientTexture', { width: 2, height: 256 }, this.scene, false);
     const canvasContext = dynamicTexture.getContext();
