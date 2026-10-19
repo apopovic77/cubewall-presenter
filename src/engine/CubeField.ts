@@ -1830,7 +1830,7 @@ export class CubeField {
     const normalDirection = this.getNormalDirection();
     if (this.physics.active) {
       const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 0.6);
-      this.physics.drive(deltaTime, this.fieldEngine.isMorphing(), lift);
+      this.physics.drive(deltaTime, lift);
       return;
     }
     // Frame-rate independent smoothing; a plain `speed * dt` overshoots on long frames.

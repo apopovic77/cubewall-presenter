@@ -290,7 +290,7 @@ export class CubeWallPresenter {
     if (this.physicsMode === 'classic') {
       this.physicsMode = 'anchor';
       this.cubeField.setPhysicsMode('anchor');
-      this.debug?.('[Physics] Mode: anchor (morph will use anchors)');
+      this.debug?.('[Physics] Mode: anchor (cubes hold the layout, F7 morphs them)');
       return;
     }
 

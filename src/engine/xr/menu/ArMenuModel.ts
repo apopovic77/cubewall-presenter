@@ -66,7 +66,7 @@ const TITLE_BLOCK_HEIGHT = 92;
 const PHYSICS_LABELS: Record<ArPhysicsMode, string> = {
   off: 'Aus · antippen: fallen lassen',
   classic: 'Fallen · antippen: Anker',
-  anchor: 'Anker · antippen: aus',
+  anchor: 'Anker: hält die Form · antippen: aus',
 };
 
 interface RowSpec {

@@ -167,14 +167,16 @@ export class FieldPhysics {
 
   /**
    * Per-frame steering before the step: lifts the selected cube, pulls cubes
-   * into the layout while it morphs (anchor mode), follows drags.
+   * into the layout (anchor mode, also while it morphs), follows drags.
    * Layout poses come from each cube's basePosition and baseRotation (root space).
    */
-  drive(deltaTime: number, morphing: boolean, liftHeight: number): void {
+  drive(deltaTime: number, liftHeight: number): void {
     if (!this.engine || !this.currentMode) return;
     this.updateRootMatrices();
     const follow = 1 - Math.exp(-TARGET_FOLLOW_RATE * deltaTime);
-    const steerToLayout = this.currentMode === 'anchor' && morphing;
+    // Anchor mode holds the layout permanently (also after a morph has finished);
+    // classic mode leaves the cubes to gravity.
+    const steerToLayout = this.currentMode === 'anchor';
 
     this.bodies.forEach((entry, cube) => {
       if (cube.isBeingDragged) {
