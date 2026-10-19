@@ -8,7 +8,8 @@ on:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    # GitHub-hosted runners are disabled for this account; use the own arkserver runner.
+    runs-on: [self-hosted, linux, arkserver]
 
     steps:
       - name: Checkout code
@@ -17,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -66,6 +67,9 @@ jobs:
 
             chown -R www-data:www-data "$DEPLOY_PATH"
             chmod -R 755 "$DEPLOY_PATH"
+
+            # Settings API runs from the repo checkout; pick up server changes.
+            systemctl restart cubewall-settings.service
 
             echo "Deployment completed successfully!"
             echo "Backup saved to: $BACKUP_PATH"

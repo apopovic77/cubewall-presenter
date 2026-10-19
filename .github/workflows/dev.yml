@@ -10,7 +10,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # GitHub-hosted runners are disabled for this account; use the own arkserver runner.
+    runs-on: [self-hosted, linux, arkserver]
 
     steps:
       - uses: actions/checkout@v4
@@ -18,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
