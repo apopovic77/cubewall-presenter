@@ -5,7 +5,7 @@ import { DebugOverlay } from './components/DebugOverlay';
 import { HtmlBillboard } from './components/HtmlBillboard.tsx';
 import { AxisLabelsOverlay } from './components/AxisLabelsOverlay';
 import { SettingsPanel } from './components/SettingsPanel';
-import { KeymapOverlay } from './components/KeymapOverlay';
+import { ControlPanel, type ControlAction } from './components/ControlPanel';
 import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
 import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
@@ -23,7 +23,7 @@ import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
-import type { ArMenuAction } from './engine/xr/menu/ArMenuModel';
+import type { ArMenuAction, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -328,6 +328,7 @@ export default function App() {
   const [selection, setSelection] = useState<CubeSelectionInfo | null>(null);
   const [settings, setSettings] = useState<PresenterSettings | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [physicsMode, setPhysicsMode] = useState<ArPhysicsMode>('off');
   const [panelPosition, setPanelPosition] = useState({ x: 24, y: 24 });
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
@@ -834,9 +835,18 @@ export default function App() {
 
   /** Shared by keyboard shortcuts and the AR menu. */
   const runAction = useCallback(
-    (action: ArMenuAction) => {
+    (action: ControlAction) => {
       const presenter = presenterRef.current;
       switch (action) {
+        case 'toggle-geometry':
+          toggleGeometryMode();
+          break;
+        case 'random-orientation':
+          presenter?.randomizeFieldOrientation();
+          break;
+        case 'toggle-settings':
+          setIsSettingsOpen((prev) => !prev);
+          break;
         case 'layout-matrix':
           applyLayoutPreset(MATRIX_LAYOUT_OVERRIDE);
           break;
@@ -864,7 +874,10 @@ export default function App() {
           setSettings((prev) => (prev ? { ...prev, waveRotationEnabled: !prev.waveRotationEnabled } : prev));
           break;
         case 'physics-cycle':
-          void presenter?.triggerPhysicsDrop().then(() => presenter.refreshArMenu());
+          void presenter?.triggerPhysicsDrop().then(() => {
+            presenter.refreshArMenu();
+            setPhysicsMode(presenter.getPhysicsMode());
+          });
           break;
         case 'next-cube':
           presenter?.selectNextCube();
@@ -876,7 +889,7 @@ export default function App() {
           break;
       }
     },
-    [applyLayoutPreset],
+    [applyLayoutPreset, toggleGeometryMode],
   );
   const runActionRef = useRef(runAction);
   runActionRef.current = runAction;
@@ -1000,7 +1013,6 @@ export default function App() {
     settings?.wavePositionEnabled ?? defaultPresenterSettings.wavePositionEnabled;
   const waveRotationEnabled =
     settings?.waveRotationEnabled ?? defaultPresenterSettings.waveRotationEnabled;
-  const physicsActive = presenterRef.current?.isPhysicsActive?.() ?? false;
 
   const handleBillboardStateChange = useCallback(
     (next: BillboardDisplayState | null) => {
@@ -1027,12 +1039,13 @@ export default function App() {
 
   return (
     <div className="cw-root">
-      <KeymapOverlay
+      <ControlPanel
         geometryMode={geometryMode}
         wavePositionEnabled={wavePositionEnabled}
         waveRotationEnabled={waveRotationEnabled}
         layoutMode={effectiveLayoutMode ?? 'matrix'}
-        physicsActive={physicsActive}
+        physicsMode={physicsMode}
+        onAction={runAction}
       />
       <CanvasStage
         onSelectionChange={handleSelectionChange}

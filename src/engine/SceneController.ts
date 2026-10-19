@@ -38,6 +38,8 @@ export class SceneController {
   private directionalLight!: DirectionalLight;
   private fillLight: DirectionalLight | null = null;
   private gradientLayer: Layer | null = null;
+  /** AR passthrough: transparent background and no depth of field, whatever the settings say. */
+  private passthroughActive = false;
   private renderingPipeline: DefaultRenderingPipeline | null = null;
 
   constructor({ canvas, config }: SceneControllerOptions) {
@@ -142,6 +144,12 @@ export class SceneController {
   }
 
   public updateBackgroundFromConfig(): void {
+    // Settings changes during AR re-run this; the room must keep showing through.
+    if (this.passthroughActive) {
+      this.scene.clearColor = new Color4(0, 0, 0, 0);
+      if (this.gradientLayer) this.gradientLayer.isEnabled = false;
+      return;
+    }
     if (this.config.background.type === 'solid') {
       const solidColor = Color3.FromHexString(this.config.background.solidColorHex);
       this.scene.clearColor = Color4.FromColor3(solidColor, 1);
@@ -175,14 +183,8 @@ export class SceneController {
    * transparent and post-processing (depth of field) is switched off.
    */
   public setPassthrough(active: boolean): void {
-    if (active) {
-      this.scene.clearColor = new Color4(0, 0, 0, 0);
-      if (this.gradientLayer) this.gradientLayer.isEnabled = false;
-      if (this.renderingPipeline) this.renderingPipeline.depthOfFieldEnabled = false;
-      this.scene.disableDepthRenderer(this.camera);
-      return;
-    }
-    if (this.gradientLayer) this.gradientLayer.isEnabled = true;
+    this.passthroughActive = active;
+    if (this.gradientLayer) this.gradientLayer.isEnabled = !active;
     this.updateBackgroundFromConfig();
     this.updateDepthOfFieldFromConfig();
   }
@@ -218,6 +220,11 @@ export class SceneController {
     }
     if (!this.renderingPipeline) return;
 
+    if (this.passthroughActive) {
+      this.renderingPipeline.depthOfFieldEnabled = false;
+      this.scene.disableDepthRenderer(this.camera);
+      return;
+    }
     this.renderingPipeline.depthOfFieldEnabled = this.config.depthOfFieldEnabled;
     if (this.config.depthOfFieldEnabled) {
       this.scene.enableDepthRenderer(this.camera, false);

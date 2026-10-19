@@ -308,6 +308,10 @@ export class CubeWallPresenter {
     this.debug?.('[Physics] Mode: off');
   }
 
+  public getPhysicsMode(): 'off' | 'classic' | 'anchor' {
+    return this.physicsMode;
+  }
+
   public isPhysicsActive(): boolean {
     return this.physicsMode !== 'off';
   }
