@@ -346,6 +346,7 @@ export class CubeWallPresenter {
     this.cubeField = new CubeField(this.scene, this.config);
     this.arController = new ArSessionController(this.scene, this.cubeField.getRootNode(), {
       setPassthrough: (active) => this.sceneController.setPassthrough(active),
+      isSelectable: (mesh) => this.cubeField.getCellFromMesh(mesh) !== null,
       onSelect: (mesh) => this.selectFromAr(mesh),
     });
     this.selectionChange = onSelectionChange;
@@ -773,11 +774,10 @@ export class CubeWallPresenter {
     return this.arController.exit();
   }
 
-  /** Pointing into the room (no cube hit) keeps the current selection. */
-  private selectFromAr(mesh: AbstractMesh | null): void {
+  private selectFromAr(mesh: AbstractMesh): void {
     const cell = this.cubeField.getCellFromMesh(mesh);
     if (!cell) return;
-    this.applySelection(cell, mesh?.name);
+    this.applySelection(cell, mesh.name);
   }
 
   private applySelection(cell: CubeCell, meshName?: string): void {

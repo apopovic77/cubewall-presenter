@@ -7,6 +7,7 @@ import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { WebXRDefaultExperience } from '@babylonjs/core/XR/webXRDefaultExperience';
 import { WebXRSessionManager } from '@babylonjs/core/XR/webXRSessionManager';
 import { WebXRState } from '@babylonjs/core/XR/webXRTypes';
+import type { WebXRInputSource } from '@babylonjs/core/XR/webXRInputSource';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import { AdvancedDynamicTexture } from '@babylonjs/gui/2D/advancedDynamicTexture';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
@@ -14,34 +15,61 @@ import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { TextBlock } from '@babylonjs/gui/2D/controls/textBlock';
 import type { CubeContentItem } from '../../types/content';
 
-/** Longest side of the cube field in AR, in metres. */
+/** Longest side of the cube field when AR starts, in metres. */
 const AR_WALL_SIZE_M = 1.2;
 /** Distance of the field centre in front of the viewer, in metres. */
-const AR_WALL_DISTANCE_M = 1.1;
-/** Table height with a floor-anchored reference space, in metres. */
-const AR_TABLE_HEIGHT_M = 0.8;
-/** Below eye level when the device only offers a head-anchored reference space. */
-const AR_BELOW_EYE_M = 0.6;
+const AR_WALL_DISTANCE_M = 1.0;
+/** Field surface below eye level when AR starts (about table height when standing), in metres. */
+const AR_BELOW_EYE_M = 0.5;
+/** Two-hand scaling limits, relative to the start size. */
+const AR_MIN_SCALE_FACTOR = 0.15;
+const AR_MAX_SCALE_FACTOR = 6;
+/** XR frames to wait for a valid head pose before the first placement. */
+const AR_PLACEMENT_FRAME_DELAY = 6;
 
 const INFO_PANEL_WIDTH_M = 0.56;
 const INFO_PANEL_HEIGHT_M = 0.32;
+const INFO_PANEL_GAP_M = 0.06;
 const INFO_SUMMARY_MAX_CHARS = 320;
 
 export interface ArSessionHooks {
   /** Pre-XR scene look (background, post-processing) is swapped for passthrough. */
   setPassthrough(active: boolean): void;
-  /** A controller or hand selected a mesh (null: it pointed at nothing in the scene). */
-  onSelect(mesh: AbstractMesh | null): void;
+  /** True when a pointer on this mesh means "select it" rather than "grab the field". */
+  isSelectable(mesh: AbstractMesh | null): boolean;
+  /** A controller or hand selected a cube mesh. */
+  onSelect(mesh: AbstractMesh): void;
   onStateChange?(active: boolean): void;
+}
+
+interface FieldBounds {
+  min: Vector3;
+  max: Vector3;
+  center: Vector3;
+}
+
+/** Anchor and hand poses when the current one- or two-hand gesture began. */
+interface GrabSnapshot {
+  handCount: number;
+  anchorPosition: Vector3;
+  scale: number;
+  yaw: number;
+  first: Vector3;
+  midpoint: Vector3;
+  distance: number;
+  angle: number;
 }
 
 /**
  * Immersive-AR mode for the cube wall (e.g. Meta Quest browser with passthrough).
  *
  * The cube field root is re-parented under an anchor node for the session, so
- * layouts and animations that drive the root keep working; the anchor scales the
- * field to table size and places it in front of the viewer. Squeeze (grip) places
- * it again in front of the current head pose.
+ * layouts and animations that drive the root keep working; the anchor carries
+ * the AR placement (position, yaw, uniform scale).
+ *
+ * Input: pointing at a cube and pinching / pulling the trigger selects it.
+ * Grabbing (grip button, or pinch / trigger aimed past the cubes) moves the
+ * field with one hand; with both hands it also scales and turns it.
  */
 export class ArSessionController {
   private readonly scene: Scene;
@@ -49,13 +77,21 @@ export class ArSessionController {
   private readonly hooks: ArSessionHooks;
   private xr: WebXRDefaultExperience | null = null;
   private anchor: TransformNode | null = null;
+  private bounds: FieldBounds | null = null;
+  private baseScale = 1;
+  private yaw = 0;
+  private placed = false;
+  private framesUntilPlacement = 0;
+  private readonly grabs = new Map<XRInputSource, WebXRInputSource>();
+  private readonly pendingSelects = new Set<XRInputSource>();
+  private grabSnapshot: GrabSnapshot | null = null;
   private infoPanel: Mesh | null = null;
   private infoTexture: AdvancedDynamicTexture | null = null;
   private infoTitle: TextBlock | null = null;
   private infoMeta: TextBlock | null = null;
   private infoSummary: TextBlock | null = null;
-  private referenceSpace: XRReferenceSpaceType = 'local-floor';
   private stateObserver: Observer<WebXRState> | null = null;
+  private frameObserver: Observer<XRFrame> | null = null;
   private active = false;
   private disposed = false;
 
@@ -89,11 +125,9 @@ export class ArSessionController {
     const xr = await this.ensureExperience();
     try {
       await xr.baseExperience.enterXRAsync('immersive-ar', 'local-floor', xr.renderTarget);
-      this.referenceSpace = 'local-floor';
     } catch {
-      // Some runtimes only grant a head-anchored space.
+      // Some runtimes only grant a head-anchored space; placement is head-relative anyway.
       await xr.baseExperience.enterXRAsync('immersive-ar', 'local', xr.renderTarget);
-      this.referenceSpace = 'local';
     }
   }
 
@@ -156,24 +190,46 @@ export class ArSessionController {
     const xr = this.xr!;
     this.active = true;
     this.hooks.setPassthrough(true);
+
     this.anchor = new TransformNode('arWallAnchor', this.scene);
     this.anchor.rotationQuaternion = Quaternion.Identity();
     this.fieldRoot.parent = this.anchor;
+    this.bounds = this.measureField();
+    const footprint = Math.max(this.bounds.max.x - this.bounds.min.x, this.bounds.max.z - this.bounds.min.z, 1e-3);
+    this.baseScale = AR_WALL_SIZE_M / footprint;
     this.createInfoPanel();
 
     const session = xr.baseExperience.sessionManager.session;
+    session.addEventListener('selectstart', this.handleSelectStart);
     session.addEventListener('select', this.handleSelect);
-    session.addEventListener('squeeze', this.handleSqueeze);
+    session.addEventListener('selectend', this.handleSelectEnd);
+    session.addEventListener('squeezestart', this.handleSqueezeStart);
+    session.addEventListener('squeezeend', this.handleSqueezeEnd);
+    session.addEventListener('inputsourceschange', this.handleInputSourcesChange);
 
-    // The head pose is only valid once the first XR frame has been rendered.
-    xr.baseExperience.sessionManager.onXRFrameObservable.addOnce(() => this.placeWall());
+    this.placed = false;
+    this.framesUntilPlacement = AR_PLACEMENT_FRAME_DELAY;
+    this.frameObserver = xr.baseExperience.sessionManager.onXRFrameObservable.add(() => this.onFrame());
     this.hooks.onStateChange?.(true);
   }
 
   private restoreScene(): void {
-    const session = this.xr?.baseExperience.sessionManager.session;
+    const sessionManager = this.xr?.baseExperience.sessionManager;
+    const session = sessionManager?.session;
+    session?.removeEventListener('selectstart', this.handleSelectStart);
     session?.removeEventListener('select', this.handleSelect);
-    session?.removeEventListener('squeeze', this.handleSqueeze);
+    session?.removeEventListener('selectend', this.handleSelectEnd);
+    session?.removeEventListener('squeezestart', this.handleSqueezeStart);
+    session?.removeEventListener('squeezeend', this.handleSqueezeEnd);
+    session?.removeEventListener('inputsourceschange', this.handleInputSourcesChange);
+    if (this.frameObserver && sessionManager) {
+      sessionManager.onXRFrameObservable.remove(this.frameObserver);
+    }
+    this.frameObserver = null;
+    this.grabs.clear();
+    this.pendingSelects.clear();
+    this.grabSnapshot = null;
+
     this.fieldRoot.parent = null;
     this.infoTexture?.dispose();
     this.infoPanel?.dispose();
@@ -181,63 +237,190 @@ export class ArSessionController {
     this.infoTexture = null;
     this.infoPanel = null;
     this.anchor = null;
+    this.bounds = null;
     this.infoTitle = this.infoMeta = this.infoSummary = null;
     this.active = false;
     this.hooks.setPassthrough(false);
     this.hooks.onStateChange?.(false);
   }
 
+  private onFrame(): void {
+    if (!this.placed) {
+      // The head pose is not valid on the very first frames of a session.
+      this.framesUntilPlacement -= 1;
+      if (this.framesUntilPlacement <= 0) {
+        this.placeInFrontOfViewer();
+        this.placed = true;
+      }
+      return;
+    }
+    if (this.grabs.size > 0) this.updateGrab();
+    this.updateInfoPanelPosition();
+  }
+
+  // --- input ---------------------------------------------------------------
+
+  private controllerFor(inputSource: XRInputSource): WebXRInputSource | undefined {
+    return this.xr?.input.controllers.find((candidate) => candidate.inputSource === inputSource);
+  }
+
+  private meshUnderPointer(controller: WebXRInputSource | undefined): AbstractMesh | null {
+    if (!controller || !this.xr) return null;
+    return this.xr.pointerSelection.getMeshUnderPointer(controller.uniqueId);
+  }
+
+  private readonly handleSelectStart = (event: XRInputSourceEvent): void => {
+    const controller = this.controllerFor(event.inputSource);
+    if (!controller) return;
+    if (this.hooks.isSelectable(this.meshUnderPointer(controller))) {
+      this.pendingSelects.add(event.inputSource);
+    } else {
+      this.startGrab(event.inputSource, controller);
+    }
+  };
+
   private readonly handleSelect = (event: XRInputSourceEvent): void => {
-    const xr = this.xr;
-    if (!xr) return;
-    const controller = xr.input.controllers.find((candidate) => candidate.inputSource === event.inputSource);
-    const mesh = controller ? xr.pointerSelection.getMeshUnderPointer(controller.uniqueId) : null;
-    this.hooks.onSelect(mesh);
+    if (!this.pendingSelects.delete(event.inputSource)) return;
+    const mesh = this.meshUnderPointer(this.controllerFor(event.inputSource));
+    if (mesh && this.hooks.isSelectable(mesh)) this.hooks.onSelect(mesh);
   };
 
-  private readonly handleSqueeze = (): void => {
-    this.placeWall();
+  private readonly handleSelectEnd = (event: XRInputSourceEvent): void => {
+    this.pendingSelects.delete(event.inputSource);
+    this.endGrab(event.inputSource);
   };
 
-  /** Scales the field to table size and puts it in front of the current head pose. */
-  private placeWall(): void {
+  private readonly handleSqueezeStart = (event: XRInputSourceEvent): void => {
+    const controller = this.controllerFor(event.inputSource);
+    if (controller) this.startGrab(event.inputSource, controller);
+  };
+
+  private readonly handleSqueezeEnd = (event: XRInputSourceEvent): void => {
+    this.endGrab(event.inputSource);
+  };
+
+  private readonly handleInputSourcesChange = (event: XRInputSourceChangeEvent): void => {
+    event.removed.forEach((source) => {
+      this.pendingSelects.delete(source);
+      this.endGrab(source);
+    });
+  };
+
+  // --- manipulation ----------------------------------------------------------
+
+  private startGrab(source: XRInputSource, controller: WebXRInputSource): void {
+    if (this.grabs.size >= 2 && !this.grabs.has(source)) return;
+    this.grabs.set(source, controller);
+    this.grabSnapshot = null;
+  }
+
+  private endGrab(source: XRInputSource): void {
+    if (this.grabs.delete(source)) this.grabSnapshot = null;
+  }
+
+  private handPositions(): Vector3[] {
+    return [...this.grabs.values()].map((controller) => (controller.grip ?? controller.pointer).getAbsolutePosition().clone());
+  }
+
+  private takeSnapshot(hands: Vector3[]): GrabSnapshot {
+    const anchor = this.anchor!;
+    const [first, second] = hands;
+    const delta = second ? second.subtract(first) : Vector3.Zero();
+    return {
+      handCount: hands.length,
+      anchorPosition: anchor.position.clone(),
+      scale: anchor.scaling.x,
+      yaw: this.yaw,
+      first: first.clone(),
+      midpoint: second ? first.add(second).scale(0.5) : first.clone(),
+      distance: Math.max(delta.length(), 1e-3),
+      angle: Math.atan2(delta.x, delta.z),
+    };
+  }
+
+  /** One hand drags the field; two hands also scale it and turn it about the vertical axis. */
+  private updateGrab(): void {
+    const anchor = this.anchor;
+    if (!anchor) return;
+    const hands = this.handPositions();
+    if (!this.grabSnapshot || this.grabSnapshot.handCount !== hands.length) {
+      this.grabSnapshot = this.takeSnapshot(hands);
+      return;
+    }
+    const snapshot = this.grabSnapshot;
+
+    if (hands.length === 1) {
+      anchor.position.copyFrom(snapshot.anchorPosition.add(hands[0].subtract(snapshot.first)));
+      return;
+    }
+
+    const [first, second] = hands;
+    const delta = second.subtract(first);
+    const midpoint = first.add(second).scale(0.5);
+    const scale = Math.min(
+      this.baseScale * AR_MAX_SCALE_FACTOR,
+      Math.max(this.baseScale * AR_MIN_SCALE_FACTOR, snapshot.scale * (delta.length() / snapshot.distance)),
+    );
+    const turn = Math.atan2(delta.x, delta.z) - snapshot.angle;
+    const turnRotation = Quaternion.RotationYawPitchRoll(turn, 0, 0);
+    // Keep the point between the hands fixed on the field while it scales and turns.
+    const offset = snapshot.anchorPosition
+      .subtract(snapshot.midpoint)
+      .applyRotationQuaternion(turnRotation)
+      .scale(scale / snapshot.scale);
+
+    this.yaw = snapshot.yaw + turn;
+    anchor.scaling.setAll(scale);
+    anchor.rotationQuaternion = Quaternion.RotationYawPitchRoll(this.yaw, 0, 0);
+    anchor.position.copyFrom(midpoint.add(offset));
+  }
+
+  /** Field extents in anchor space at scale 1 (the anchor is still the identity here). */
+  private measureField(): FieldBounds {
+    this.anchor!.computeWorldMatrix(true);
+    const { min, max } = this.fieldRoot.getHierarchyBoundingVectors(true);
+    return { min: min.clone(), max: max.clone(), center: min.add(max).scale(0.5) };
+  }
+
+  /** Starting placement: table-top size, slightly below eye level, in front of the viewer. */
+  private placeInFrontOfViewer(): void {
     const xr = this.xr;
     const anchor = this.anchor;
-    if (!xr || !anchor) return;
+    const bounds = this.bounds;
+    if (!xr || !anchor || !bounds) return;
     const head = xr.baseExperience.camera;
-
-    // Measure the field in its own (unparented) scale.
-    anchor.scaling.setAll(1);
-    anchor.position.setAll(0);
-    anchor.rotationQuaternion = Quaternion.Identity();
-    anchor.computeWorldMatrix(true);
-    const { min, max } = this.fieldRoot.getHierarchyBoundingVectors(true);
-    const footprint = Math.max(max.x - min.x, max.z - min.z, 1e-3);
-    const scale = AR_WALL_SIZE_M / footprint;
-    const center = min.add(max).scale(0.5);
 
     const forward = head.getDirection(Vector3.Forward());
     forward.y = 0;
     if (forward.lengthSquared() < 1e-6) forward.set(0, 0, 1);
     forward.normalize();
-    const yaw = Math.atan2(forward.x, forward.z);
-    const height = this.referenceSpace === 'local-floor' ? AR_TABLE_HEIGHT_M : head.position.y - AR_BELOW_EYE_M;
+
+    this.yaw = Math.atan2(forward.x, forward.z);
+    const rotation = Quaternion.RotationYawPitchRoll(this.yaw, 0, 0);
+    const scale = this.baseScale;
     const target = head.position.add(forward.scale(AR_WALL_DISTANCE_M));
-    target.y = height;
+    const surfaceY = head.position.y - AR_BELOW_EYE_M;
 
+    const rotatedCenter = bounds.center.scale(scale).applyRotationQuaternion(rotation);
     anchor.scaling.setAll(scale);
-    anchor.rotationQuaternion = Quaternion.RotationYawPitchRoll(yaw, 0, 0);
-    // Shift so the field's centre (not the root origin) lands on the target.
-    const rotatedCenter = center.scale(scale).applyRotationQuaternion(anchor.rotationQuaternion);
-    anchor.position.copyFrom(target.subtract(new Vector3(rotatedCenter.x, 0, rotatedCenter.z)));
-    anchor.position.y = height - min.y * scale;
+    anchor.rotationQuaternion = rotation;
+    anchor.position.set(target.x - rotatedCenter.x, surfaceY - bounds.max.y * scale, target.z - rotatedCenter.z);
+    this.updateInfoPanelPosition();
+  }
 
-    if (this.infoPanel) {
-      const depth = (max.z - min.z) * scale;
-      const panelPos = target.add(forward.scale(depth / 2 + 0.05));
-      panelPos.y = height + INFO_PANEL_HEIGHT_M / 2 + 0.12;
-      this.infoPanel.position.copyFrom(panelPos);
-    }
+  // --- info panel --------------------------------------------------------------
+
+  /** Keeps the panel above the far edge of the field, at its world size. */
+  private updateInfoPanelPosition(): void {
+    const panel = this.infoPanel;
+    const anchor = this.anchor;
+    const bounds = this.bounds;
+    if (!panel || !anchor || !bounds) return;
+    const farEdge = Vector3.TransformCoordinates(
+      new Vector3(bounds.center.x, bounds.max.y, bounds.max.z),
+      anchor.computeWorldMatrix(true),
+    );
+    panel.position.set(farEdge.x, farEdge.y + INFO_PANEL_HEIGHT_M / 2 + INFO_PANEL_GAP_M, farEdge.z);
   }
 
   private createInfoPanel(): void {

@@ -37,6 +37,9 @@ import { GlassTileFactory } from './tiles/GlassTileFactory';
 import type { TileDescriptor, TileFootprint } from './tiles/TileTypes';
 import { MasonryField } from './layouts/fields/MasonryField';
 
+/** Pixel width requested from storage for cube face textures. */
+const CUBE_TEXTURE_WIDTH_PX = 320;
+
 export interface CubeSelectionInfo {
   readonly gridX: number;
   readonly gridZ: number;
@@ -1222,6 +1225,9 @@ export class CubeField {
       Texture.TRILINEAR_SAMPLINGMODE,
       () => {
         material.diffuseTexture = texture;
+        // The per-cube tint is only for untextured cubes; multiplied with a
+        // photo it casts it dark magenta/rose.
+        material.diffuseColor = Color3.White();
         material.emissiveTexture = null;
         material.emissiveColor = Color3.Black();
         cell.textureLoaded = true;
@@ -1571,9 +1577,9 @@ export class CubeField {
     }
     try {
       const parsed = new URL(url);
-      if (!parsed.searchParams.has('width')) {
-        parsed.searchParams.set('width', '600');
-      }
+      // A cube face is a few hundred pixels at most; 600 px images cost ~4x the
+      // GPU memory for 625 cubes, which a standalone headset cannot afford.
+      parsed.searchParams.set('width', String(CUBE_TEXTURE_WIDTH_PX));
       if (!parsed.searchParams.has('quality')) {
         parsed.searchParams.set('quality', '85');
       }
