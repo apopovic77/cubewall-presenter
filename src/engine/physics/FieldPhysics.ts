@@ -55,6 +55,8 @@ interface CubeBody {
   motion: PhysicsMotionType;
   /** Smoothed target of an animated body (selection lift / drag), field space. */
   target: Vector3 | null;
+  /** Rotation of a cube held in a hand (field space); null for screen drags. */
+  heldRotation: Quaternion | null;
   liftOrigin: Vector3 | null;
 }
 
@@ -176,7 +178,12 @@ export class FieldPhysics {
 
     this.bodies.forEach((entry, cube) => {
       if (cube.isBeingDragged) {
-        this.followTarget(entry, follow);
+        if (entry.heldRotation && entry.target) {
+          // Held in a hand: exactly the hand pose; the animated body shoves the others aside.
+          entry.body.setTargetTransform(entry.target, entry.heldRotation);
+        } else {
+          this.followTarget(entry, follow);
+        }
         return;
       }
       if (cube.isSelected) {
@@ -205,6 +212,7 @@ export class FieldPhysics {
     if (!entry) return;
     cube.isBeingDragged = true;
     entry.liftOrigin = null;
+    entry.heldRotation = null;
     entry.target = entry.node.position.clone();
     this.setMotion(entry, PhysicsMotionType.ANIMATED);
   }
@@ -215,18 +223,38 @@ export class FieldPhysics {
     if (!entry || !entry.target) return;
     const parent = this.root.parent as TransformNode | null;
     const fieldPoint = parent
-      ? Vector3.TransformCoordinates(worldPoint, parent.getWorldMatrix().clone().invert())
+      ? Vector3.TransformCoordinates(worldPoint, this.worldToField())
       : worldPoint.clone();
     fieldPoint.y = this.groundY + this.config.cubeSize * 0.5 + this.config.cubeSize * 0.6;
     entry.target.copyFrom(fieldPoint);
   }
 
-  endDrag(cube: PhysicsCube): void {
+  /** Hand-held cube: target pose as a world matrix (AR hand or ray), converted to field space. */
+  holdTo(cube: PhysicsCube, world: Matrix): void {
+    const entry = this.bodies.get(cube);
+    if (!entry || !entry.target) return;
+    world.multiplyToRef(this.worldToField(), this.bodyMatrix);
+    entry.heldRotation ??= new Quaternion();
+    this.bodyMatrix.decompose(this.tmpScale, entry.heldRotation, entry.target);
+  }
+
+  /** Releases a dragged or held cube; `worldVelocity` (m/s) throws it. */
+  endDrag(cube: PhysicsCube, worldVelocity?: Vector3): void {
     const entry = this.bodies.get(cube);
     cube.isBeingDragged = false;
     if (!entry) return;
     entry.target = null;
+    entry.heldRotation = null;
     this.setMotion(entry, PhysicsMotionType.DYNAMIC);
+    if (worldVelocity) {
+      entry.body.setLinearVelocity(Vector3.TransformNormal(worldVelocity, this.worldToField()));
+    }
+  }
+
+  /** World → field space (inverse of the root's parent, e.g. the AR anchor incl. its scale). */
+  private worldToField(): Matrix {
+    const parent = this.root.parent as TransformNode | null;
+    return parent ? parent.getWorldMatrix().clone().invert() : Matrix.Identity();
   }
 
   dispose(): void {
@@ -254,7 +282,7 @@ export class FieldPhysics {
     const body = new PhysicsBody(node, PhysicsMotionType.DYNAMIC, false, this.scene);
     body.shape = shape;
     body.setMassProperties({ mass: 1 });
-    return { node, body, shape, motion: PhysicsMotionType.DYNAMIC, target: null, liftOrigin: null };
+    return { node, body, shape, motion: PhysicsMotionType.DYNAMIC, target: null, heldRotation: null, liftOrigin: null };
   }
 
   private createGround(): void {

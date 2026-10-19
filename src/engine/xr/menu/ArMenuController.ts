@@ -97,6 +97,11 @@ export class ArMenuController {
     return true;
   }
 
+  /** True while the panel is shown and the point is within reach of it (finger poking the menu). */
+  isNearPanel(point: Vector3): boolean {
+    return this.panel.visible && Vector3.Distance(point, this.panel.mesh.getAbsolutePosition()) < AR_MENU_WORLD_SIZE_M;
+  }
+
   dispose(): void {
     this.xr.baseExperience.sessionManager.onXRFrameObservable.remove(this.frameObserver);
     this.controllerObservers.forEach((remove) => remove());

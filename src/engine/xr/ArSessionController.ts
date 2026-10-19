@@ -3,10 +3,12 @@ import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
-import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { WebXRDefaultExperience } from '@babylonjs/core/XR/webXRDefaultExperience';
 import { WebXRSessionManager } from '@babylonjs/core/XR/webXRSessionManager';
 import { WebXRState } from '@babylonjs/core/XR/webXRTypes';
+import { WebXRFeatureName } from '@babylonjs/core/XR/webXRFeaturesManager';
+import { WebXRHandJoint, type WebXRHand } from '@babylonjs/core/XR/features/WebXRHandTracking';
 import type { WebXRInputSource } from '@babylonjs/core/XR/webXRInputSource';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import { AdvancedDynamicTexture } from '@babylonjs/gui/2D/advancedDynamicTexture';
@@ -29,6 +31,15 @@ const AR_MAX_SCALE_FACTOR = 6;
 /** XR frames to wait for a valid head pose before the first placement. */
 const AR_PLACEMENT_FRAME_DELAY = 6;
 
+/** A pinch or grip this close to a cube's surface grabs the cube instead of the field. */
+const NEAR_GRAB_MARGIN_M = 0.03;
+/** Holding trigger/pinch this long on a cube under the ray picks it up on the ray. */
+const RAY_HOLD_MS = 350;
+/** Thumb and index tips closer than this count as pinching (no finger-touch selection then). */
+const PINCH_DISTANCE_M = 0.03;
+/** Window of hand positions used for the throw velocity on release. */
+const THROW_SAMPLE_MS = 100;
+
 const INFO_PANEL_WIDTH_M = 0.56;
 const INFO_PANEL_HEIGHT_M = 0.32;
 const INFO_PANEL_GAP_M = 0.06;
@@ -41,11 +52,28 @@ export interface ArSessionHooks {
   isSelectable(mesh: AbstractMesh | null): boolean;
   /** A controller or hand selected a cube mesh. */
   onSelect(mesh: AbstractMesh): void;
+  /** Cube mesh whose surface is within `margin` metres of a world point (negative: inside), or null. */
+  findCubeNear(point: Vector3, margin: number): AbstractMesh | null;
+  /** A hand or ray takes the cube; `holdCube` poses it until `releaseCube`. */
+  grabCube(mesh: AbstractMesh): void;
+  holdCube(mesh: AbstractMesh, world: Matrix): void;
+  /** `worldVelocity` in m/s, for throwing it under physics. */
+  releaseCube(mesh: AbstractMesh, worldVelocity: Vector3): void;
   /** Toggle states shown on the AR menu. */
   getMenuState(): ArMenuState;
   /** Menu actions other than placing the field and leaving AR (handled here). */
   onMenuAction(action: ArMenuAction): void;
   onStateChange?(active: boolean): void;
+}
+
+/** A cube carried by a hand (grip / pinch at the cube) or on a controller ray. */
+interface CubeHold {
+  mesh: AbstractMesh;
+  controller: WebXRInputSource;
+  via: 'grip' | 'ray';
+  /** Cube pose relative to the holding node at pick-up. */
+  offset: Matrix;
+  samples: Array<{ position: Vector3; time: number }>;
 }
 
 interface FieldBounds {
@@ -89,7 +117,11 @@ export class ArSessionController {
   private placed = false;
   private framesUntilPlacement = 0;
   private readonly grabs = new Map<XRInputSource, WebXRInputSource>();
-  private readonly pendingSelects = new Set<XRInputSource>();
+  /** Trigger/pinch pressed with the ray on a cube: a short press selects, a long one picks it up. */
+  private readonly pendingRayPicks = new Map<XRInputSource, { mesh: AbstractMesh; startedAt: number }>();
+  private readonly cubeHolds = new Map<XRInputSource, CubeHold>();
+  /** Cube each index finger currently touches (one selection per touch). */
+  private readonly touchedCubes = new Map<XRHandedness, AbstractMesh | null>();
   /** Input sources whose current select gesture belongs to the menu. */
   private readonly menuSelects = new Set<XRInputSource>();
   private menu: ArMenuController | null = null;
@@ -185,9 +217,11 @@ export class ArSessionController {
     const xr = await WebXRDefaultExperience.CreateAsync(this.scene, {
       disableDefaultUI: true,
       disableTeleportation: true,
-      // Babylon's near interaction would grab cubes on touch; selection is by pointer ray.
+      // Babylon's near interaction would grab cubes on touch; grabbing is handled here.
       disableNearInteraction: true,
       optionalFeatures: true,
+      // A ray on every hand / controller at once, not only on the one that clicked last.
+      pointerSelectionOptions: { enablePointerSelectionOnAllControllers: true },
     });
     this.stateObserver = xr.baseExperience.onStateChangedObservable.add((state) => {
       if (state === WebXRState.IN_XR) {
@@ -245,7 +279,9 @@ export class ArSessionController {
     }
     this.frameObserver = null;
     this.grabs.clear();
-    this.pendingSelects.clear();
+    this.pendingRayPicks.clear();
+    [...this.cubeHolds.keys()].forEach((source) => this.endCubeHold(source));
+    this.touchedCubes.clear();
     this.menuSelects.clear();
     this.menu?.dispose();
     this.menu = null;
@@ -275,6 +311,9 @@ export class ArSessionController {
       }
       return;
     }
+    this.promoteRayPicks();
+    if (this.cubeHolds.size > 0) this.updateCubeHolds();
+    this.updateFingerTouch();
     if (this.grabs.size > 0) this.updateGrab();
     this.updateInfoPanelPosition();
   }
@@ -307,8 +346,14 @@ export class ArSessionController {
       this.menuSelects.add(event.inputSource);
       return;
     }
-    if (this.hooks.isSelectable(this.meshUnderPointer(controller))) {
-      this.pendingSelects.add(event.inputSource);
+    const nearCube = this.hooks.findCubeNear(this.grabPoint(controller), NEAR_GRAB_MARGIN_M);
+    if (nearCube) {
+      this.startCubeHold(event.inputSource, controller, nearCube, 'grip');
+      return;
+    }
+    const pointed = this.meshUnderPointer(controller);
+    if (pointed && this.hooks.isSelectable(pointed)) {
+      this.pendingRayPicks.set(event.inputSource, { mesh: pointed, startedAt: performance.now() });
     } else {
       this.startGrab(event.inputSource, controller);
     }
@@ -320,32 +365,133 @@ export class ArSessionController {
       if (controller) this.menu?.handleSelect(controller);
       return;
     }
-    if (!this.pendingSelects.delete(event.inputSource)) return;
-    const mesh = this.meshUnderPointer(this.controllerFor(event.inputSource));
-    if (mesh && this.hooks.isSelectable(mesh)) this.hooks.onSelect(mesh);
+    // Still pending means a short press: select. A long press became a ray hold instead.
+    const pick = this.pendingRayPicks.get(event.inputSource);
+    if (!pick) return;
+    this.pendingRayPicks.delete(event.inputSource);
+    this.hooks.onSelect(pick.mesh);
   };
 
   private readonly handleSelectEnd = (event: XRInputSourceEvent): void => {
-    this.pendingSelects.delete(event.inputSource);
+    this.pendingRayPicks.delete(event.inputSource);
+    this.endCubeHold(event.inputSource);
     this.menuSelects.delete(event.inputSource);
     this.endGrab(event.inputSource);
   };
 
   private readonly handleSqueezeStart = (event: XRInputSourceEvent): void => {
     const controller = this.controllerFor(event.inputSource);
-    if (controller) this.startGrab(event.inputSource, controller);
+    if (!controller) return;
+    const nearCube = this.hooks.findCubeNear(this.grabPoint(controller), NEAR_GRAB_MARGIN_M);
+    if (nearCube) {
+      this.startCubeHold(event.inputSource, controller, nearCube, 'grip');
+    } else {
+      this.startGrab(event.inputSource, controller);
+    }
   };
 
   private readonly handleSqueezeEnd = (event: XRInputSourceEvent): void => {
+    this.endCubeHold(event.inputSource);
     this.endGrab(event.inputSource);
   };
 
   private readonly handleInputSourcesChange = (event: XRInputSourceChangeEvent): void => {
     event.removed.forEach((source) => {
-      this.pendingSelects.delete(source);
+      this.pendingRayPicks.delete(source);
+      this.endCubeHold(source);
       this.endGrab(source);
     });
   };
+
+  // --- holding cubes ----------------------------------------------------------
+
+  private handOf(controller: WebXRInputSource): WebXRHand | null {
+    const tracking = this.xr?.baseExperience.featuresManager.getEnabledFeature(WebXRFeatureName.HAND_TRACKING);
+    return tracking?.getHandByControllerId(controller.uniqueId) ?? null;
+  }
+
+  private jointPosition(hand: WebXRHand, joint: WebXRHandJoint): Vector3 | null {
+    const mesh = hand.getJointMesh(joint);
+    return mesh ? mesh.getAbsolutePosition() : null;
+  }
+
+  /** Where a hand pinches (between thumb and index tip) or where a controller is held. */
+  private grabPoint(controller: WebXRInputSource): Vector3 {
+    const hand = this.handOf(controller);
+    if (hand) {
+      const thumb = this.jointPosition(hand, WebXRHandJoint.THUMB_TIP);
+      const index = this.jointPosition(hand, WebXRHandJoint.INDEX_FINGER_TIP);
+      if (thumb && index) return thumb.add(index).scale(0.5);
+    }
+    return (controller.grip ?? controller.pointer).getAbsolutePosition().clone();
+  }
+
+  private holderNode(hold: Pick<CubeHold, 'controller' | 'via'>): AbstractMesh {
+    return hold.via === 'ray' ? hold.controller.pointer : (hold.controller.grip ?? hold.controller.pointer);
+  }
+
+  private startCubeHold(source: XRInputSource, controller: WebXRInputSource, mesh: AbstractMesh, via: CubeHold['via']): void {
+    if (this.cubeHolds.has(source) || [...this.cubeHolds.values()].some((hold) => hold.mesh === mesh)) return;
+    const holder = this.holderNode({ controller, via });
+    const offset = mesh.computeWorldMatrix(true).multiply(holder.computeWorldMatrix(true).clone().invert());
+    this.hooks.grabCube(mesh);
+    this.cubeHolds.set(source, { mesh, controller, via, offset, samples: [] });
+  }
+
+  private endCubeHold(source: XRInputSource): void {
+    const hold = this.cubeHolds.get(source);
+    if (!hold) return;
+    this.cubeHolds.delete(source);
+    this.hooks.releaseCube(hold.mesh, this.throwVelocity(hold));
+  }
+
+  /** A press held on a cube long enough turns into carrying it on the ray. */
+  private promoteRayPicks(): void {
+    const now = performance.now();
+    this.pendingRayPicks.forEach((pick, source) => {
+      if (now - pick.startedAt < RAY_HOLD_MS) return;
+      this.pendingRayPicks.delete(source);
+      const controller = this.controllerFor(source);
+      if (controller) this.startCubeHold(source, controller, pick.mesh, 'ray');
+    });
+  }
+
+  private updateCubeHolds(): void {
+    const now = performance.now();
+    this.cubeHolds.forEach((hold) => {
+      const world = hold.offset.multiply(this.holderNode(hold).computeWorldMatrix(true));
+      this.hooks.holdCube(hold.mesh, world);
+      hold.samples.push({ position: world.getTranslation(), time: now });
+      while (hold.samples.length > 2 && now - hold.samples[0].time > THROW_SAMPLE_MS) hold.samples.shift();
+    });
+  }
+
+  private throwVelocity(hold: CubeHold): Vector3 {
+    const first = hold.samples[0];
+    const last = hold.samples[hold.samples.length - 1];
+    if (!first || !last || last.time - first.time < 1) return Vector3.Zero();
+    return last.position.subtract(first.position).scale(1000 / (last.time - first.time));
+  }
+
+  /** Touching a cube with an index fingertip selects it (once per touch). */
+  private updateFingerTouch(): void {
+    const tracking = this.xr?.baseExperience.featuresManager.getEnabledFeature(WebXRFeatureName.HAND_TRACKING);
+    if (!tracking) return;
+    (['left', 'right'] as XRHandedness[]).forEach((handedness) => {
+      const hand = tracking.getHandByHandedness(handedness);
+      const tip = hand ? this.jointPosition(hand, WebXRHandJoint.INDEX_FINGER_TIP) : null;
+      const thumb = hand ? this.jointPosition(hand, WebXRHandJoint.THUMB_TIP) : null;
+      const busy =
+        !tip ||
+        (thumb !== null && Vector3.Distance(tip, thumb) < PINCH_DISTANCE_M) ||
+        [...this.cubeHolds.values()].some((hold) => this.handOf(hold.controller) === hand) ||
+        Boolean(this.menu?.isNearPanel(tip));
+      const touched = busy || !tip ? null : this.hooks.findCubeNear(tip, 0);
+      const previous = this.touchedCubes.get(handedness) ?? null;
+      if (touched && touched !== previous) this.hooks.onSelect(touched);
+      this.touchedCubes.set(handedness, touched);
+    });
+  }
 
   // --- manipulation ----------------------------------------------------------
 

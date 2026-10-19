@@ -4,7 +4,7 @@ import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
-import { Vector3, Quaternion, Vector4 } from '@babylonjs/core/Maths/math.vector';
+import { Vector3, Quaternion, Vector4, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
@@ -123,6 +123,7 @@ export class CubeField {
   private contentItems: CubeContentItem[] = [];
   /** Rigid-body simulation (drop / anchor modes); runs in field space, see FieldPhysics. */
   private readonly physics: FieldPhysics;
+  private readonly holdMatrix = new Matrix();
   private fieldAutoRotateActive = false;
   private fieldAutoRotateSpeed = 0.25;
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
@@ -454,7 +455,7 @@ export class CubeField {
       }
       cube.basePosition.copyFrom(position);
       if (writeMeshes && (initial || !this.config.wavePositionEnabled)) {
-        const shouldReset = initial || (!cube.isSelected && !cube.interactionActive);
+        const shouldReset = initial || (!cube.isSelected && !cube.interactionActive && !cube.isBeingDragged);
         if (shouldReset) {
           cube.currentPosition.copyFrom(position);
           cube.targetPosition.copyFrom(position);
@@ -1824,6 +1825,8 @@ export class CubeField {
     const interactionBlend = 1 - Math.exp(-this.config.interactionLerpSpeed * deltaTime);
 
     this.cubes.forEach((cube) => {
+      // A cube held in an AR hand is posed by holdCube; it glides back once released.
+      if (cube.isBeingDragged) return;
       if (!this.isSelectableCube(cube)) {
         const descriptor = cube.tileDescriptor;
         const stacking = descriptor?.stacking;
@@ -2091,6 +2094,42 @@ export class CubeField {
   public endPhysicsDrag(cell: CubeCell): void {
     if (!this.physics.active) return;
     this.physics.endDrag(cell);
+  }
+
+  /** AR: a hand (or ray) takes this cube; it follows holdCube until releaseCube. */
+  public grabCube(cell: CubeCell): void {
+    if (this.selection === cell) this.selectCell(null);
+    if (this.physics.active) {
+      this.physics.beginDrag(cell);
+    } else {
+      cell.isBeingDragged = true;
+    }
+  }
+
+  /** Pose of the held cube as a world matrix. */
+  public holdCube(cell: CubeCell, world: Matrix): void {
+    if (!cell.isBeingDragged) return;
+    if (this.physics.active) {
+      this.physics.holdTo(cell, world);
+      return;
+    }
+    const parentWorld = this.root.getWorldMatrix();
+    world.multiplyToRef(parentWorld.clone().invert(), this.holdMatrix);
+    const rotation = new Quaternion();
+    this.holdMatrix.decompose(undefined, rotation, cell.mesh.position);
+    cell.mesh.rotationQuaternion = null;
+    rotation.toEulerAnglesToRef(cell.mesh.rotation);
+    cell.currentPosition.copyFrom(cell.mesh.position);
+    cell.currentRotation.copyFrom(cell.mesh.rotation);
+  }
+
+  /** Lets go of a held cube; with physics it is thrown with `worldVelocity` (m/s). */
+  public releaseCube(cell: CubeCell, worldVelocity?: Vector3): void {
+    if (this.physics.active) {
+      this.physics.endDrag(cell, worldVelocity);
+    } else {
+      cell.isBeingDragged = false;
+    }
   }
 
   public getPhysicsGroundWorldY(): number {

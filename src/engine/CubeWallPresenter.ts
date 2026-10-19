@@ -353,6 +353,16 @@ export class CubeWallPresenter {
       setPassthrough: (active) => this.sceneController.setPassthrough(active),
       isSelectable: (mesh) => this.cubeField.getCellFromMesh(mesh) !== null,
       onSelect: (mesh) => this.selectFromAr(mesh),
+      findCubeNear: (point, margin) => this.findCubeNear(point, margin),
+      grabCube: (mesh) => this.grabCubeFromAr(mesh),
+      holdCube: (mesh, world) => {
+        const cell = this.cubeField.getCellFromMesh(mesh);
+        if (cell) this.cubeField.holdCube(cell, world);
+      },
+      releaseCube: (mesh, velocity) => {
+        const cell = this.cubeField.getCellFromMesh(mesh);
+        if (cell) this.cubeField.releaseCube(cell, velocity);
+      },
       getMenuState: () => this.getArMenuState(),
       onMenuAction: (action) => this.arMenuAction?.(action),
     });
@@ -780,6 +790,36 @@ export class CubeWallPresenter {
 
   public exitAr(): Promise<void> {
     return this.arController.exit();
+  }
+
+  /**
+   * Nearest cube whose surface is within `margin` metres of a world point; the
+   * cube is approximated by a sphere slightly larger than its half side.
+   */
+  private findCubeNear(point: Vector3, margin: number): AbstractMesh | null {
+    let best: AbstractMesh | null = null;
+    let bestGap = margin;
+    for (const cell of this.cubeField.getAllCells()) {
+      const mesh = cell.mesh;
+      if (!mesh.isEnabled() || !mesh.isPickable) continue;
+      const sphere = mesh.getBoundingInfo().boundingSphere;
+      const gap = Vector3.Distance(point, sphere.centerWorld) - sphere.radiusWorld * 0.7;
+      if (gap <= bestGap) {
+        bestGap = gap;
+        best = mesh;
+      }
+    }
+    return best;
+  }
+
+  private grabCubeFromAr(mesh: AbstractMesh): void {
+    const cell = this.cubeField.getCellFromMesh(mesh);
+    if (!cell) return;
+    if (this.cubeField.getCurrentSelection() === cell) {
+      this.cubeField.selectCell(null);
+      this.updateBillboard(null, { animate: false, reason: 'manual' });
+    }
+    this.cubeField.grabCube(cell);
   }
 
   private getArMenuState(): ArMenuState {
