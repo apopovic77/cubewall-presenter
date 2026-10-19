@@ -29,6 +29,9 @@ function sanitizeText(html: string | null | undefined): string {
   return textContent.replace(/\s+/g, ' ').trim();
 }
 
+/** Text tiles rendered between two yields to the main thread. */
+const TILES_PER_YIELD = 6;
+
 export class GlassTileFactory {
   private readonly scene: Scene;
   private readonly htmlRenderer: HtmlTextureRenderer;
@@ -42,13 +45,18 @@ export class GlassTileFactory {
 
   public async buildDescriptors(
     items: CubeContentItem[],
-    options?: { includeCaptions?: boolean },
+    options?: { includeCaptions?: boolean; isCancelled?: () => boolean },
   ): Promise<TileDescriptor[]> {
     const includeCaptions = options?.includeCaptions ?? true;
     const buildContext = this.getBuildContext();
     const descriptors: TileDescriptor[] = [];
 
+    let built = 0;
     for (const item of items) {
+      if (options?.isCancelled?.()) break;
+      // Text tiles are rendered one by one; yield now and then so the page stays responsive.
+      if (built > 0 && built % TILES_PER_YIELD === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      built += 1;
       const imageDescriptor = this.createImageDescriptor(item, buildContext);
       descriptors.push(imageDescriptor);
 

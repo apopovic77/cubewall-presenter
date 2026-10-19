@@ -656,7 +656,8 @@ export default function App() {
   }, [handleSettingsChange, setLayoutOverride]);
 
   const applyLayoutPreset = useCallback(
-    (preset: Partial<CubeLayoutConfig>) => {
+    /** `keepGeometry`: masonry with the instanced cubes instead of switching to glass tiles (AR). */
+    (preset: Partial<CubeLayoutConfig>, options?: { keepGeometry?: boolean }) => {
       const previousMode =
         layoutOverrideRef.current?.mode ??
         contentLayoutRef.current?.mode ??
@@ -724,7 +725,7 @@ export default function App() {
           1,
           Math.round(settingsRef.current?.masonryColumnCount ?? appConfig.masonry.columnCount),
         );
-        if (settingsRef.current?.geometryMode !== 'tile') {
+        if (!options?.keepGeometry && settingsRef.current?.geometryMode !== 'tile') {
           handleSettingsChange({
             geometryMode: 'tile',
             _internalAllowGeometryModeChange: true,
@@ -840,7 +841,9 @@ export default function App() {
           applyLayoutPreset(MATRIX_LAYOUT_OVERRIDE);
           break;
         case 'layout-masonry':
-          applyLayoutPreset(MASONRY_LAYOUT_OVERRIDE);
+          // Glass tiles (1 mesh + 1 HTML-rendered texture per tile, not instanced)
+          // are far too heavy for a headset; in AR masonry stays with the cubes.
+          applyLayoutPreset(MASONRY_LAYOUT_OVERRIDE, { keepGeometry: presenter?.isArActive() ?? false });
           break;
         case 'layout-axis':
           applyLayoutPreset(AXIS_LAYOUT_OVERRIDE);

@@ -124,6 +124,7 @@ export class CubeField {
   /** Rigid-body simulation (drop / anchor modes); runs in field space, see FieldPhysics. */
   private readonly physics: FieldPhysics;
   private readonly holdMatrix = new Matrix();
+  private contentGeneration = 0;
   private fieldAutoRotateActive = false;
   private fieldAutoRotateSpeed = 0.25;
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
@@ -593,6 +594,8 @@ export class CubeField {
   }
 
   public async setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): Promise<void> {
+    // Overlapping calls (layout + geometry change fire several): only the latest one finishes.
+    const generation = ++this.contentGeneration;
     this.contentItems = items;
     const layoutOverrides = options?.layout;
     const layout = this.mergeLayoutOptions(layoutOverrides);
@@ -630,7 +633,8 @@ export class CubeField {
       );
     }
     if (this.config.geometryMode === 'tile') {
-      await this.prepareTileDescriptors(items);
+      const current = await this.prepareTileDescriptors(items, generation);
+      if (!current) return;
       this.applyTileDescriptorsToCubes();
     } else {
       this.disposeTileDescriptors();
@@ -724,14 +728,21 @@ export class CubeField {
     return order === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
   }
 
-  private async prepareTileDescriptors(items: CubeContentItem[]): Promise<void> {
+  /** False if a newer setContent started meanwhile (its result is discarded). */
+  private async prepareTileDescriptors(items: CubeContentItem[], generation: number): Promise<boolean> {
     this.disposeTileDescriptors();
     if (this.config.geometryMode !== 'tile') {
-      return;
+      return true;
     }
+    const isStale = () => generation !== this.contentGeneration;
     const descriptors = await this.glassTileFactory.buildDescriptors(items, {
       includeCaptions: this.config.tiles.captionsEnabled,
+      isCancelled: isStale,
     });
+    if (isStale()) {
+      descriptors.forEach((descriptor) => descriptor.glass?.texture.dispose());
+      return false;
+    }
     const baseSize = this.config.cubeSize;
     const imageDepth = this.config.tiles.image.thickness;
     const textDepth = this.config.tiles.text.thickness;
@@ -754,6 +765,7 @@ export class CubeField {
       }
     }
     this.layoutDirty = true;
+    return true;
   }
 
   private disposeTileDescriptors(): void {
