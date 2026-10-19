@@ -24,9 +24,8 @@ function sanitizeText(html: string | null | undefined): string {
   if (!html) {
     return '';
   }
-  const container = document.createElement('div');
-  container.innerHTML = html;
-  const textContent = container.textContent ?? '';
+  // A parsed (inert) document never runs scripts or loads images, unlike innerHTML.
+  const textContent = new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '';
   return textContent.replace(/\s+/g, ' ').trim();
 }
 

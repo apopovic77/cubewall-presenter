@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import DOMPurify from 'dompurify';
 import type { BillboardDisplayState } from '../engine/CubeWallPresenter';
 import type { PresenterSettings } from '../config/PresenterSettings';
 import { appConfig } from '../config/AppConfig';
@@ -36,6 +37,17 @@ function escapeHtml(value: string): string {
   });
 }
 
+/** Only web links may be opened from content; blocks `javascript:` and friends. */
+function safeHttpUrl(value: string | null | undefined): string {
+  if (!value) return '';
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function buildHtml(template: string, state: BillboardDisplayState): string {
   if (!state.content) return template || '';
   const hasTokens =
@@ -55,10 +67,10 @@ function buildHtml(template: string, state: BillboardDisplayState): string {
     const publishedLabel = publishedDate && !Number.isNaN(publishedDate.getTime()) ? publishedDate.toLocaleDateString('de-DE') : '';
     replacements['{{title}}'] = escapeHtml(item.title ?? '');
     replacements['{{summary}}'] = escapeHtml(item.summary ?? '');
-    replacements['{{url}}'] = escapeHtml(item.url ?? '');
+    replacements['{{url}}'] = escapeHtml(safeHttpUrl(item.url));
     replacements['{{source}}'] = escapeHtml(item.sourceName ?? '');
     replacements['{{category}}'] = escapeHtml(item.category ?? '');
-    replacements['{{imageUrl}}'] = escapeHtml(item.imageUrl ?? '');
+    replacements['{{imageUrl}}'] = escapeHtml(safeHttpUrl(item.imageUrl));
     replacements['{{publishedAt}}'] = escapeHtml(publishedLabel);
   } else {
     replacements['{{title}}'] = '';
@@ -73,7 +85,8 @@ function buildHtml(template: string, state: BillboardDisplayState): string {
   Object.entries(replacements).forEach(([token, value]) => {
     html = html.replaceAll(token, String(value));
   });
-  return html.replace(/\n/g, '<br/>');
+  // The template comes from the shared settings store, so it is untrusted.
+  return DOMPurify.sanitize(html.replace(/\n/g, '<br/>'));
 }
 
 export function HtmlBillboard({ state, settings, onLayout }: HtmlBillboardProps) {
@@ -149,9 +162,9 @@ export function HtmlBillboard({ state, settings, onLayout }: HtmlBillboardProps)
       if (!(anchor instanceof HTMLAnchorElement)) {
         return;
       }
-      const href = anchor.getAttribute('href');
-      if (!href) return;
       event.preventDefault();
+      const href = safeHttpUrl(anchor.getAttribute('href'));
+      if (!href) return;
       window.open(href, '_blank', 'noopener,noreferrer');
     };
     node.addEventListener('click', handleClick);

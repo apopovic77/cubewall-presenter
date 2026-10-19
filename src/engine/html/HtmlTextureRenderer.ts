@@ -1,6 +1,7 @@
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import type { Scene } from '@babylonjs/core/scene';
+import DOMPurify from 'dompurify';
 
 export interface HtmlTextureOptions {
   maxWidth: number;
@@ -143,7 +144,8 @@ export class HtmlTextureRenderer {
     wrapper.style.fontFamily = fontFamily;
     wrapper.style.width = `${maxWidth}px`;
     wrapper.style.padding = `${padding}px`;
-    wrapper.innerHTML = html;
+    // Tile HTML is built from API content; sanitize before it touches the live DOM.
+    wrapper.innerHTML = DOMPurify.sanitize(html);
     this.measureContainer.innerHTML = '';
     this.measureContainer.appendChild(wrapper);
     const rect = wrapper.getBoundingClientRect();
