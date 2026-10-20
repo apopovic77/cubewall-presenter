@@ -13,7 +13,6 @@ import { getCookie, setCookie } from './utils/cookies';
 import {
   appConfig,
   type CubeLayoutConfig,
-  type TextureUvLayout,
   type AxisLabelsMode,
   type AxisLabelAxis,
   type GeometryMode,
@@ -24,6 +23,7 @@ import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
 import type { ArMenuAction, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
+import { mapUvLayout } from './config/applySettingsToConfig';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -121,17 +121,6 @@ function loadCookieSettings(): PresenterSettings {
   }
 }
 
-function mapUvLayout(layout: TextureUvLayout): { sidePattern: 'uniform' | 'alternating'; mirrorTopBottom: boolean } {
-  switch (layout) {
-    case 'mirrorTopAndAlternatingSides':
-      return { sidePattern: 'alternating' as const, mirrorTopBottom: true };
-    case 'uniformSides':
-      return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
-    case 'standard':
-    default:
-      return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
-  }
-}
 
 function mergeLayoutConfig(overrides?: Partial<CubeLayoutConfig>): CubeLayoutConfig {
   const base = appConfig.layout;
@@ -215,115 +204,6 @@ async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
   return { settings: loadCookieSettings(), fromServer: false };
 }
 
-function syncConfigWithSettings(settings: PresenterSettings): void {
-  appConfig.gridSize = settings.gridSize;
-  appConfig.useFallbackImages = settings.useFallbackImages;
-  appConfig.textureUvLayout = settings.textureUvLayout;
-  const { sidePattern, mirrorTopBottom } = mapUvLayout(settings.textureUvLayout);
-  appConfig.textureSidePattern = sidePattern;
-  appConfig.textureMirrorTopBottom = mirrorTopBottom;
-  appConfig.waveSpeed = settings.waveSpeed;
-  appConfig.wavePositionEnabled = settings.wavePositionEnabled;
-  appConfig.waveRotationEnabled = settings.waveRotationEnabled;
-  appConfig.waveAmplitudeY = settings.waveAmplitudeY;
-  appConfig.waveFrequencyY = settings.waveFrequencyY;
-  appConfig.wavePhaseSpread = settings.wavePhaseSpread;
-  appConfig.waveAmplitudeRot = settings.waveAmplitudeRot;
-  appConfig.waveFrequencyRot = settings.waveFrequencyRot;
-  appConfig.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
-  appConfig.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
-  appConfig.interactionRadius = settings.interactionRadius;
-  appConfig.interactionLift = settings.interactionLift;
-  appConfig.selectedCubeRotation = settings.selectedCubeRotation;
-  appConfig.selectedCubePopOutDistance = settings.selectedCubePopOutDistance;
-  appConfig.selectedCubeLift = settings.selectedCubeLift;
-  appConfig.selectedCubeNormalDirection = settings.selectedCubeNormalDirection;
-  appConfig.selectionSpinEnabled = settings.selectionSpinEnabled;
-  appConfig.camera.radius = settings.cameraRadius;
-  appConfig.camera.flyToRadiusFactor = settings.flyToRadiusFactor;
-  appConfig.camera.lerpSpeedFactor = settings.cameraLerpSpeed;
-  appConfig.camera.useCustomView = settings.useCustomCamera;
-  appConfig.camera.offset.x = settings.cameraOffsetX;
-  appConfig.camera.offset.y = settings.cameraOffsetY;
-  appConfig.camera.offset.z = settings.cameraOffsetZ;
-  appConfig.camera.lookAtOffset.x = settings.cameraLookAtOffsetX;
-  appConfig.camera.lookAtOffset.y = settings.cameraLookAtOffsetY;
-  appConfig.camera.lookAtOffset.z = settings.cameraLookAtOffsetZ;
-  appConfig.camera.animationSpeedFactor = settings.cameraAnimationSpeed;
-  appConfig.camera.orbitMode = settings.cameraOrbitMode;
-  appConfig.camera.followMode = settings.cameraFollowMode;
-  appConfig.camera.relativeOffset.x = settings.cameraRelativeOffsetX;
-  appConfig.camera.relativeOffset.y = settings.cameraRelativeOffsetY;
-  appConfig.camera.relativeOffset.z = settings.cameraRelativeOffsetZ;
-  appConfig.camera.relativeLookAtOffset.x = settings.cameraRelativeLookAtOffsetX;
-  appConfig.camera.relativeLookAtOffset.y = settings.cameraRelativeLookAtOffsetY;
-  appConfig.camera.relativeLookAtOffset.z = settings.cameraRelativeLookAtOffsetZ;
-  appConfig.camera.autoOrbitEnabled = settings.cameraAutoOrbitEnabled;
-  appConfig.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
-  appConfig.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
-  appConfig.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
-  appConfig.physicsLiftSpeed = settings.physicsLiftSpeed;
-  appConfig.geometryMode = settings.geometryMode;
-  appConfig.tileDepth = settings.tileDepth;
-  appConfig.tileAspectMode = settings.tileAspectMode;
-  appConfig.baseOrientation = settings.baseOrientation;
-  appConfig.tiles.captionsEnabled = settings.tileCaptionsEnabled;
-  appConfig.tiles.text.tileWidth = Math.max(0.2, settings.textTileWidth);
-  appConfig.tiles.text.verticalGap = Math.max(0, settings.textTileVerticalGap);
-  appConfig.tiles.text.glassAlpha = Math.min(Math.max(settings.textTileGlassAlpha, 0), 1);
-  appConfig.masonry.columnCount = Math.max(1, Math.round(settings.masonryColumnCount));
-  appConfig.masonry.columnSpacing = Math.max(0, settings.masonryColumnSpacing);
-  appConfig.masonry.rowSpacing = Math.max(0, settings.masonryRowSpacing);
-  appConfig.ambientLightIntensity = settings.ambientLightIntensity;
-  appConfig.ambientLightColorHex = settings.ambientLightColorHex;
-  appConfig.directionalLightIntensity = settings.directionalLightIntensity;
-  appConfig.directionalLightColorHex = settings.directionalLightColorHex;
-  appConfig.directionalLightDirection.x = settings.directionalLightDirectionX;
-  appConfig.directionalLightDirection.y = settings.directionalLightDirectionY;
-  appConfig.directionalLightDirection.z = settings.directionalLightDirectionZ;
-  appConfig.fillLightEnabled = settings.fillLightEnabled;
-  appConfig.fillLightIntensity = settings.fillLightIntensity;
-  appConfig.fillLightColorHex = settings.fillLightColorHex;
-  appConfig.fillLightDirection.x = settings.fillLightDirectionX;
-  appConfig.fillLightDirection.y = settings.fillLightDirectionY;
-  appConfig.fillLightDirection.z = settings.fillLightDirectionZ;
-  appConfig.background.type = settings.backgroundType;
-  appConfig.background.solidColorHex = settings.backgroundSolidHex;
-  appConfig.background.gradientTopHex = settings.backgroundGradientTopHex;
-  appConfig.background.gradientBottomHex = settings.backgroundGradientBottomHex;
-  appConfig.billboard.heightOffset = settings.billboardHeightOffset;
-  appConfig.billboard.distance = settings.billboardDistance;
-  appConfig.billboard.angleDegrees = settings.billboardAngleDegrees;
-  appConfig.billboard.connectorMode = settings.billboardConnectorMode;
-  appConfig.billboard.connectorThicknessPx = settings.billboardConnectorThicknessPx;
-  appConfig.billboard.connectorFeatherPx = settings.billboardConnectorFeatherPx;
-  appConfig.slowAutorotateEnabled = settings.slowAutorotateEnabled;
-  appConfig.slowAutorotateSpeed = settings.slowAutorotateSpeed;
-  appConfig.selectionCameraFollowEnabled = settings.selectionCameraFollowEnabled;
-  appConfig.depthOfFieldEnabled = settings.depthOfFieldEnabled;
-  appConfig.depthOfFieldFocusDistance = settings.depthOfFieldFocusDistance;
-  appConfig.depthOfFieldFStop = settings.depthOfFieldFStop;
-  appConfig.depthOfFieldFocalLength = settings.depthOfFieldFocalLength;
-  appConfig.depthOfFieldBlurLevel = settings.depthOfFieldBlurLevel;
-  appConfig.depthOfFieldAutoFocusEnabled = settings.depthOfFieldAutoFocusEnabled;
-  appConfig.depthOfFieldAutoFocusOffset = settings.depthOfFieldAutoFocusOffset;
-  appConfig.depthOfFieldAutoFocusSharpness = settings.depthOfFieldAutoFocusSharpness;
-  if (settings.depthOfFieldAutoFocusEnabled) {
-    appConfig.depthOfFieldFocusDistance = settings.depthOfFieldFocusDistance;
-    appConfig.depthOfFieldFStop = settings.depthOfFieldFStop;
-  }
-  appConfig.billboard.mode = settings.billboardMode;
-  appConfig.billboard.htmlContent = settings.billboardHtmlContent;
-  appConfig.axisLabels.enabled = settings.axisLabelsEnabled;
-  appConfig.axisLabels.mode = settings.axisLabelsMode;
-  appConfig.axisLabels.startDateIso = settings.axisLabelsStartDate;
-  appConfig.axisLabels.stepDays = settings.axisLabelsStepDays;
-  appConfig.axisLabels.template = settings.axisLabelsTemplate;
-  appConfig.axisLabels.offset.x = settings.axisLabelsOffsetX;
-  appConfig.axisLabels.offset.y = settings.axisLabelsOffsetY;
-  appConfig.axisLabels.offset.z = settings.axisLabelsOffsetZ;
-}
-
 export default function App() {
   const [selection, setSelection] = useState<CubeSelectionInfo | null>(null);
   const [settings, setSettings] = useState<PresenterSettings | null>(null);
@@ -358,7 +238,6 @@ export default function App() {
   const contentProviderId = resolveContentProviderId();
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
-  appConfig.useFallbackImages = enableBaseFallbackTextures;
   const billboardStateRef = useRef<BillboardDisplayState | null>(null);
 
   const apiBaseUrl = useMemo(() => {
@@ -686,10 +565,7 @@ export default function App() {
             axisLabelsTemplate: '{{value}}',
           };
         });
-        appConfig.axisLabels.enabled = true;
-        appConfig.axisLabels.mode = 'overlay';
-        appConfig.axisLabels.template = '{{value}}';
-        appConfig.axisLabels.axes = ['rows'];
+        presenterRef.current?.setAxisLabelAxes(['rows']);
       } else if (previousMode === 'axis') {
         const previous = axisLabelStateRef.current;
         setSettings((prev) => {
@@ -709,26 +585,12 @@ export default function App() {
             axisLabelsTemplate: previous.template,
           };
         });
-        if (previous) {
-          appConfig.axisLabels.enabled = previous.enabled;
-          appConfig.axisLabels.mode = previous.mode;
-          appConfig.axisLabels.template = previous.template;
-          appConfig.axisLabels.axes = previous.axes ?? ['rows'];
-        } else {
-          appConfig.axisLabels.enabled = defaultPresenterSettings.axisLabelsEnabled;
-          appConfig.axisLabels.mode = defaultPresenterSettings.axisLabelsMode;
-          appConfig.axisLabels.template = defaultPresenterSettings.axisLabelsTemplate;
-          appConfig.axisLabels.axes = ['rows'];
-        }
+        presenterRef.current?.setAxisLabelAxes(previous?.axes ?? ['rows']);
         axisLabelStateRef.current = null;
       }
 
       const presetCopy: Partial<CubeLayoutConfig> = { ...preset };
       if (presetCopy.mode === 'masonry') {
-        appConfig.masonry.columnCount = Math.max(
-          1,
-          Math.round(settingsRef.current?.masonryColumnCount ?? appConfig.masonry.columnCount),
-        );
         if (settingsRef.current?.geometryMode !== 'tile') {
           handleSettingsChange({
             geometryMode: 'tile',
@@ -738,9 +600,6 @@ export default function App() {
       }
       layoutOverrideRef.current = presetCopy;
       setLayoutOverride(presetCopy);
-      if (presetCopy.mode) {
-        appConfig.layout.mode = presetCopy.mode;
-      }
       presenterRef.current?.markAxisLabelsDirty();
       if (presenterRef.current && contentItemsRef.current.length > 0) {
         void applyContentToPresenter(
@@ -773,7 +632,6 @@ export default function App() {
 
   useEffect(() => {
     if (!settings) return;
-    syncConfigWithSettings(settings);
     setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
     // Only write back when the session started from the server's settings; a
     // session that fell back to cookie/defaults must not overwrite the shared store.

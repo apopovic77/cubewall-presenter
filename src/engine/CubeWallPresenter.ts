@@ -16,6 +16,7 @@ import { ArSessionController } from './xr/ArSessionController';
 import { BillboardConnector } from './presentation/BillboardConnector';
 import { AxisLabelController } from './presentation/AxisLabelController';
 import { AutoSelectionTimer } from './selection/AutoSelectionTimer';
+import { applySettingsToConfig, mapUvLayout } from '../config/applySettingsToConfig';
 import { PointerInteractionController } from './input/PointerInteractionController';
 import type { ArMenuAction, ArMenuState } from './xr/menu/ArMenuModel';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
@@ -230,6 +231,12 @@ export class CubeWallPresenter {
 
   public isPhysicsActive(): boolean {
     return this.physicsMode !== 'off';
+  }
+
+  /** Which axes get labels (layout presets choose; not a user setting). */
+  public setAxisLabelAxes(axes: AxisLabelAxis[]): void {
+    this.config.axisLabels.axes = axes;
+    this.axisLabels.markDirty();
   }
 
   public markAxisLabelsDirty(): void {
@@ -829,108 +836,10 @@ export class CubeWallPresenter {
       this.axisLabels.refreshAnchors();
     }
 
-    this.config.waveSpeed = settings.waveSpeed;
-    this.config.wavePositionEnabled = settings.wavePositionEnabled;
-    this.config.waveRotationEnabled = settings.waveRotationEnabled;
-    this.config.waveAmplitudeY = settings.waveAmplitudeY;
-    this.config.waveFrequencyY = settings.waveFrequencyY;
-    this.config.wavePhaseSpread = settings.wavePhaseSpread;
-    this.config.waveAmplitudeRot = settings.waveAmplitudeRot;
-    this.config.waveFrequencyRot = settings.waveFrequencyRot;
-    this.config.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
-    this.config.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
     this.hoverInteractionEnabled = settings.enableHoverInteraction;
     this.autoSelection.configure(settings.autoSelectEnabled, settings.autoSelectInterval);
-    this.config.interactionRadius = settings.interactionRadius;
-    this.config.interactionLift = settings.interactionLift;
-    this.config.selectedCubeRotation = settings.selectedCubeRotation;
-    this.config.selectedCubePopOutDistance = settings.selectedCubePopOutDistance;
-    this.config.selectedCubeLift = settings.selectedCubeLift;
-    this.config.selectedCubeNormalDirection = settings.selectedCubeNormalDirection;
-    this.config.slowAutorotateEnabled = settings.slowAutorotateEnabled;
-    this.config.slowAutorotateSpeed = settings.slowAutorotateSpeed;
-    this.config.selectionCameraFollowEnabled = settings.selectionCameraFollowEnabled;
-    this.config.camera.radius = settings.cameraRadius;
-    this.config.camera.flyToRadiusFactor = settings.flyToRadiusFactor;
-    this.config.camera.lerpSpeedFactor = settings.cameraLerpSpeed;
-    this.config.camera.useCustomView = settings.useCustomCamera;
-    this.config.camera.offset.x = settings.cameraOffsetX;
-    this.config.camera.offset.y = settings.cameraOffsetY;
-    this.config.camera.offset.z = settings.cameraOffsetZ;
-    this.config.camera.lookAtOffset.x = settings.cameraLookAtOffsetX;
-    this.config.camera.lookAtOffset.y = settings.cameraLookAtOffsetY;
-    this.config.camera.lookAtOffset.z = settings.cameraLookAtOffsetZ;
-    this.config.camera.animationSpeedFactor = settings.cameraAnimationSpeed;
-    this.config.camera.orbitMode = settings.cameraOrbitMode;
-    this.config.camera.followMode = settings.cameraFollowMode;
-    this.config.camera.relativeOffset.x = settings.cameraRelativeOffsetX;
-    this.config.camera.relativeOffset.y = settings.cameraRelativeOffsetY;
-    this.config.camera.relativeOffset.z = settings.cameraRelativeOffsetZ;
-    this.config.camera.relativeLookAtOffset.x = settings.cameraRelativeLookAtOffsetX;
-    this.config.camera.relativeLookAtOffset.y = settings.cameraRelativeLookAtOffsetY;
-    this.config.camera.relativeLookAtOffset.z = settings.cameraRelativeLookAtOffsetZ;
-    this.config.camera.autoOrbitEnabled = settings.cameraAutoOrbitEnabled;
-    this.config.camera.autoOrbitSpeed = settings.cameraAutoOrbitSpeed;
-    this.config.physicsSelectedRotationMode = settings.physicsSelectedRotationMode;
-    this.config.physicsSelectedRotationSpeed = settings.physicsSelectedRotationSpeed;
-    this.config.physicsLiftSpeed = settings.physicsLiftSpeed;
-    this.config.geometryMode = settings.geometryMode;
-    this.config.tileDepth = settings.tileDepth;
-    this.config.tileAspectMode = settings.tileAspectMode;
-    this.config.baseOrientation = settings.baseOrientation;
-    this.config.tiles.captionsEnabled = settings.tileCaptionsEnabled;
-    this.config.tiles.text.tileWidth = settings.textTileWidth;
-    this.config.tiles.text.verticalGap = settings.textTileVerticalGap;
-    this.config.tiles.text.glassAlpha = settings.textTileGlassAlpha;
-    this.config.masonry.columnCount = Math.max(1, Math.round(settings.masonryColumnCount));
-    this.config.masonry.columnSpacing = settings.masonryColumnSpacing;
-    this.config.masonry.rowSpacing = settings.masonryRowSpacing;
-    this.config.ambientLightIntensity = settings.ambientLightIntensity;
-    this.config.ambientLightColorHex = settings.ambientLightColorHex;
-    this.config.directionalLightIntensity = settings.directionalLightIntensity;
-    this.config.directionalLightColorHex = settings.directionalLightColorHex;
-    this.config.directionalLightDirection.x = settings.directionalLightDirectionX;
-    this.config.directionalLightDirection.y = settings.directionalLightDirectionY;
-    this.config.directionalLightDirection.z = settings.directionalLightDirectionZ;
-    this.config.fillLightEnabled = settings.fillLightEnabled;
-    this.config.fillLightIntensity = settings.fillLightIntensity;
-    this.config.fillLightColorHex = settings.fillLightColorHex;
-    this.config.fillLightDirection.x = settings.fillLightDirectionX;
-    this.config.fillLightDirection.y = settings.fillLightDirectionY;
-    this.config.fillLightDirection.z = settings.fillLightDirectionZ;
-    this.config.background.type = settings.backgroundType;
-    this.config.background.solidColorHex = settings.backgroundSolidHex;
-    this.config.background.gradientTopHex = settings.backgroundGradientTopHex;
-    this.config.background.gradientBottomHex = settings.backgroundGradientBottomHex;
-    this.config.billboard.heightOffset = settings.billboardHeightOffset;
-    this.config.billboard.distance = settings.billboardDistance;
-    this.config.billboard.angleDegrees = settings.billboardAngleDegrees;
-    this.config.textureUvLayout = settings.textureUvLayout;
-    const uvLayout = (() => {
-      switch (settings.textureUvLayout) {
-        case 'mirrorTopAndAlternatingSides':
-          return { sidePattern: 'alternating' as const, mirrorTopBottom: true };
-        case 'uniformSides':
-        case 'standard':
-        default:
-          return { sidePattern: 'uniform' as const, mirrorTopBottom: false };
-      }
-    })();
-    const { sidePattern, mirrorTopBottom } = uvLayout;
-    this.config.textureSidePattern = sidePattern;
-    this.config.textureMirrorTopBottom = mirrorTopBottom;
-    this.config.billboard.mode = settings.billboardMode;
-    this.config.billboard.htmlContent = settings.billboardHtmlContent;
-    this.config.billboard.connectorMode = settings.billboardConnectorMode;
-    this.config.billboard.connectorThicknessPx = settings.billboardConnectorThicknessPx;
-    this.config.billboard.connectorFeatherPx = settings.billboardConnectorFeatherPx;
-    this.config.axisLabels.enabled = settings.axisLabelsEnabled;
-    this.config.axisLabels.startDateIso = settings.axisLabelsStartDate;
-    this.config.axisLabels.stepDays = Math.max(1, settings.axisLabelsStepDays);
-    this.config.axisLabels.template = settings.axisLabelsTemplate;
-    this.config.axisLabels.offset.x = settings.axisLabelsOffsetX;
-    this.config.axisLabels.offset.y = settings.axisLabelsOffsetY;
-    this.config.axisLabels.offset.z = settings.axisLabelsOffsetZ;
+    applySettingsToConfig(settings, this.config);
+    const { sidePattern, mirrorTopBottom } = mapUvLayout(settings.textureUvLayout);
     this.axisLabels.applySettings();
     this.sceneController.updateLightingFromConfig();
     this.sceneController.updateBackgroundFromConfig();
