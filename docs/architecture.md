@@ -162,5 +162,6 @@ graph LR
 - **Layout:** the leader's layout footprint covers the whole group (image + gap + caption), so masonry packs the pair; the sampled leader position is the group centre and `placeInLayout` moves both tiles to their places around it, along the tiles' local −Y. Upright tiles stand the caption under the image; flat ones lay it next to it.
 - **Motion:** the caption's offset lives in the image's frame, so wave, selection spin and morphs turn the pair as one.
 - **Physics:** the image's body gets a `PhysicsShapeContainer` with both boxes (`PhysicsCube.companion`); captions have no body of their own and are posed from it. Every size change goes through `CubeField.applyCellGeometry`, which rebuilds the group's body under physics (images learn their aspect ratio after loading).
+- **Caption settings:** width (relative to the image tile, `text.tileWidth / image.baseWidth`), gap and glass alpha apply live (`CubeField.applyCaptionSettings`), also under physics.
 - **Grid:** tile mode grows the grid to a cell per tile (`TileSet.requiredGridSize`); the presenter compares the settings' grid size with what it requested, not with the grown grid.
 - **Not instanced:** caption tiles keep their own mesh and full-resolution texture. A shared 4096 px atlas would leave ~163 px per caption at 625 items, too small for text.

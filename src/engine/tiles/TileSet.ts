@@ -15,6 +15,7 @@ export class TileSet {
   public descriptors: TileDescriptor[] = [];
   public footprints: TileFootprint[] = [];
   public readonly groups: TileGroups;
+  private readonly captionAspects = new WeakMap<TileDescriptor, number>();
   private readonly config: CubeWallConfig;
   private readonly factory: GlassTileFactory;
   /** AR: no glass caption tiles (one HTML-rendered texture and mesh each; too heavy for a headset). */
@@ -47,20 +48,38 @@ export class TileSet {
     descriptors.forEach((descriptor) => {
       const built = descriptor.footprint;
       if (descriptor.kind === 'glassText') {
-        // Drawn at the tile width: keep the rendered text block's aspect ratio.
-        const aspect = built.width > 0 && built.height > 0 ? built.width / built.height : 4;
-        built.height = Math.max(0.05 * baseSize, baseSize / aspect);
+        // The rendered text block's aspect ratio; width / height follow from the caption settings.
+        this.captionAspects.set(descriptor, built.width > 0 && built.height > 0 ? built.width / built.height : 4);
         built.depth = textDepth;
       } else {
+        built.width = baseSize;
         built.height = baseSize;
         built.depth = imageDepth;
       }
-      built.width = baseSize;
     });
     this.descriptors = descriptors;
     this.groups.rebuild(descriptors);
-    this.refreshFootprints();
+    this.applyCaptionSettings();
     return true;
+  }
+
+  /**
+   * Caption width (relative to the image tile: `text.tileWidth / image.baseWidth`,
+   * so the default draws it as wide as the image), height from the text's
+   * aspect ratio, glass alpha. Takes effect on the next layout / material pass.
+   */
+  public applyCaptionSettings(): void {
+    const { text, image } = this.config.tiles;
+    const width = this.config.cubeSize * (text.tileWidth / Math.max(0.01, image.baseWidth));
+    const alpha = Math.min(0.95, Math.max(0.05, text.glassAlpha));
+    this.descriptors.forEach((descriptor) => {
+      if (descriptor.kind !== 'glassText') return;
+      const aspect = this.captionAspects.get(descriptor) ?? 4;
+      descriptor.footprint.width = width;
+      descriptor.footprint.height = Math.max(0.05 * this.config.cubeSize, width / aspect);
+      if (descriptor.glass) descriptor.glass.alpha = alpha;
+    });
+    this.refreshFootprints();
   }
 
   /** Image tile `index`: height from the image aspect ratio. */

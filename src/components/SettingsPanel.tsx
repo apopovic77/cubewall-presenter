@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ChangeEvent, ReactElement } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { PresenterSettings } from '../config/PresenterSettings';
+import { appConfig } from '../config/AppConfig';
 
 interface SettingsPanelMeta {
   providerId: string;
@@ -69,7 +70,8 @@ const SLIDERS: SliderSpec[] = [
     min: 0.4,
     max: 3,
     step: 0.05,
-    formatter: (v) => v.toFixed(2),
+    // Relative to the image tile (1.00× = as wide as the image).
+    formatter: (v) => `${(v / appConfig.tiles.image.baseWidth).toFixed(2)}× image`,
     isEnabled: (s) => s.geometryMode === 'tile',
   },
   {

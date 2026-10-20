@@ -30,7 +30,9 @@ export class CellGeometry {
     }
 
     const baseSize = this.config.cubeSize;
-    const desiredWidth = this.config.geometryMode === 'tile' ? baseSize : descriptor.footprint.width;
+    // Image tiles are as wide as a cube; captions have their own (settings) width.
+    const desiredWidth =
+      this.config.geometryMode === 'tile' && descriptor.kind !== 'glassText' ? baseSize : descriptor.footprint.width;
     let desiredHeight = descriptor.footprint.height || baseSize;
     const desiredDepth = descriptor.footprint.depth || this.config.tileDepth;
 

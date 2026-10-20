@@ -849,6 +849,7 @@ export class CubeWallPresenter {
     const previousWavePosition = this.config.wavePositionEnabled;
     const previousWaveRotation = this.config.waveRotationEnabled;
     const previousTileCaptions = this.config.tiles.captionsEnabled;
+    const previousCaptionLook = { ...this.config.tiles.text };
     const targetGridSize = Math.min(Math.max(3, Math.round(settings.gridSize)), this.config.maxGridSize);
     // Compared with the requested size: tile mode grows the actual grid to fit its tiles.
     if (targetGridSize !== this.requestedGridSize) {
@@ -889,6 +890,15 @@ export class CubeWallPresenter {
       previousOrientation !== this.config.baseOrientation
     ) {
       this.cubeField.applyGeometrySettings();
+    }
+
+    const captionText = this.config.tiles.text;
+    if (
+      previousCaptionLook.tileWidth !== captionText.tileWidth ||
+      previousCaptionLook.verticalGap !== captionText.verticalGap ||
+      previousCaptionLook.glassAlpha !== captionText.glassAlpha
+    ) {
+      this.cubeField.applyCaptionSettings();
     }
 
     if (

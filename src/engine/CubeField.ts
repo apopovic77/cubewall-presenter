@@ -136,6 +136,28 @@ export class CubeField {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
   }
 
+  /**
+   * Caption width / gap / alpha changed in the settings: resize the caption
+   * tiles, re-flow the layout and, under physics, rebuild the pair bodies.
+   */
+  public applyCaptionSettings(): void {
+    if (this.tiles.groups.links.length === 0) return;
+    this.tiles.applyCaptionSettings();
+    for (const link of this.tiles.groups.links) {
+      const caption = this.cubes[link.follower];
+      if (!caption?.tileDescriptor?.glass) continue;
+      caption.material.alpha = caption.tileDescriptor.glass.alpha;
+      this.applyCellGeometry(caption, null);
+      this.tileMaterialManager.applyTileMaterials(caption, caption.tileDescriptor);
+      // The gap changes the offset without resizing a mesh: refresh the body explicitly.
+      if (this.physics.active && this.cubes[link.leader]) {
+        this.updateCompanion(link.leader);
+        this.physics.refreshBody(this.cubes[link.leader]);
+      }
+    }
+    this.layoutDirty = true;
+  }
+
   public applyGeometrySettings(): void {
     this.cubes.forEach((cell) => {
       this.applyCellGeometry(cell, cell.textureAspectRatio);
