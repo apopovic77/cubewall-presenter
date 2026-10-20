@@ -33,6 +33,7 @@ import {
   STRESS_GRID_SIZE,
   stressCameraRadius,
 } from './config/sessionOverrides';
+import { stepWaveSetting, type WaveStepKey } from './config/waveSteps';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -198,6 +199,19 @@ function cloneBillboardState(state: BillboardDisplayState | null): BillboardDisp
       : null,
   };
 }
+
+/** Control panel wave buttons → the setting they step. */
+const WAVE_STEP_KEYS: Record<
+  'wave-height-up' | 'wave-height-down' | 'wave-tilt-up' | 'wave-tilt-down' | 'wave-speed-up' | 'wave-speed-down',
+  WaveStepKey
+> = {
+  'wave-height-up': 'waveAmplitudeY',
+  'wave-height-down': 'waveAmplitudeY',
+  'wave-tilt-up': 'waveAmplitudeRot',
+  'wave-tilt-down': 'waveAmplitudeRot',
+  'wave-speed-up': 'waveSpeed',
+  'wave-speed-down': 'waveSpeed',
+};
 
 const SESSION_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> | null =
   SESSION_LAYOUT === 'masonry'
@@ -792,6 +806,20 @@ export default function App() {
         case 'wave-rotation':
           setSettings((prev) => (prev ? { ...prev, waveRotationEnabled: !prev.waveRotationEnabled } : prev));
           break;
+        case 'wave-height-up':
+        case 'wave-height-down':
+        case 'wave-tilt-up':
+        case 'wave-tilt-down':
+        case 'wave-speed-up':
+        case 'wave-speed-down': {
+          const key = WAVE_STEP_KEYS[action];
+          const direction = action.endsWith('-up') ? 1 : -1;
+          setSettings((prev) => (prev ? { ...prev, ...stepWaveSetting(prev, key, direction) } : prev));
+          break;
+        }
+        case 'labels-toggle':
+          setSettings((prev) => (prev ? { ...prev, axisLabelsEnabled: !prev.axisLabelsEnabled } : prev));
+          break;
         case 'physics-cycle':
           void presenter?.triggerPhysicsDrop().then(() => {
             presenter.refreshArMenu();
@@ -823,12 +851,17 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Typing in a settings field (billboard HTML, text inputs) is not a shortcut.
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) {
+        if (event.key !== 'F1' && event.key !== 'Escape') return;
+      }
       if (event.key === '1') {
         event.preventDefault();
         toggleGeometryMode();
         return;
       }
-      const keyActions: Record<string, ArMenuAction> = {
+      const keyActions: Record<string, ControlAction> = {
         '2': 'wave-position',
         '3': 'wave-rotation',
         '4': 'layout-matrix',
@@ -841,6 +874,12 @@ export default function App() {
         N: 'next-cube',
         m: 'random-cube',
         M: 'random-cube',
+        '+': 'wave-height-up',
+        '-': 'wave-height-down',
+        '.': 'wave-speed-up',
+        ',': 'wave-speed-down',
+        l: 'labels-toggle',
+        L: 'labels-toggle',
       };
       const action = keyActions[event.key];
       if (action) {
@@ -966,6 +1005,10 @@ export default function App() {
         layoutMode={effectiveLayoutMode ?? 'matrix'}
         physicsMode={physicsMode}
         morphFront={morphFront}
+        waveHeight={settings?.waveAmplitudeY ?? defaultPresenterSettings.waveAmplitudeY}
+        waveTilt={settings?.waveAmplitudeRot ?? defaultPresenterSettings.waveAmplitudeRot}
+        waveSpeed={settings?.waveSpeed ?? defaultPresenterSettings.waveSpeed}
+        labelsEnabled={settings?.axisLabelsEnabled ?? defaultPresenterSettings.axisLabelsEnabled}
         onAction={runAction}
       />
       <CanvasStage

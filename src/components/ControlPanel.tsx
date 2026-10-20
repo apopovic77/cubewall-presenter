@@ -2,7 +2,18 @@ import { useState, type CSSProperties } from 'react';
 import type { ArMenuAction, ArPhysicsMode } from '../engine/xr/menu/ArMenuModel';
 
 /** Everything the panel can trigger: the AR menu actions plus desktop-only ones. */
-export type ControlAction = ArMenuAction | 'toggle-geometry' | 'random-orientation' | 'toggle-settings';
+export type ControlAction =
+  | ArMenuAction
+  | 'toggle-geometry'
+  | 'random-orientation'
+  | 'toggle-settings'
+  | 'wave-height-up'
+  | 'wave-height-down'
+  | 'wave-tilt-up'
+  | 'wave-tilt-down'
+  | 'wave-speed-up'
+  | 'wave-speed-down'
+  | 'labels-toggle';
 
 interface ControlPanelProps {
   geometryMode: 'cube' | 'tile';
@@ -11,6 +22,10 @@ interface ControlPanelProps {
   layoutMode: string;
   physicsMode: ArPhysicsMode;
   morphFront: 'sphere' | 'plane' | 'none';
+  waveHeight: number;
+  waveTilt: number;
+  waveSpeed: number;
+  labelsEnabled: boolean;
   onAction: (action: ControlAction) => void;
 }
 
@@ -44,6 +59,10 @@ export function ControlPanel({
   layoutMode,
   physicsMode,
   morphFront,
+  waveHeight,
+  waveTilt,
+  waveSpeed,
+  labelsEnabled,
   onAction,
 }: ControlPanelProps) {
   const [open, setOpen] = useState(true);
@@ -71,11 +90,23 @@ export function ControlPanel({
       ],
     },
     {
+      title: 'Welle',
+      buttons: [
+        { action: 'wave-height-down', label: `Höhe − (${waveHeight.toFixed(2)})`, shortcut: '-' },
+        { action: 'wave-height-up', label: 'Höhe +', shortcut: '+' },
+        { action: 'wave-tilt-down', label: `Kippen − (${waveTilt.toFixed(2)})`, shortcut: '' },
+        { action: 'wave-tilt-up', label: 'Kippen +', shortcut: '' },
+        { action: 'wave-speed-down', label: `Tempo − (${waveSpeed.toFixed(2)})`, shortcut: ',' },
+        { action: 'wave-speed-up', label: 'Tempo +', shortcut: '.' },
+      ],
+    },
+    {
       title: 'Würfel und Ansicht',
       buttons: [
         { action: 'next-cube', label: 'Nächster Würfel', shortcut: 'N' },
         { action: 'random-cube', label: 'Zufälliger Würfel', shortcut: 'M' },
         { action: 'toggle-geometry', label: geometryMode === 'tile' ? 'Kacheln → Würfel' : 'Würfel → Kacheln', shortcut: '1' },
+        { action: 'labels-toggle', label: labelsEnabled ? 'Labels: an' : 'Labels: aus', shortcut: 'L', active: labelsEnabled },
         { action: 'toggle-settings', label: 'Einstellungen', shortcut: 'F1' },
       ],
     },
@@ -100,7 +131,7 @@ export function ControlPanel({
                   style={{ ...buttonStyle, ...(button.active ? activeButtonStyle : null) }}
                 >
                   <span>{button.label}</span>
-                  <kbd style={kbdStyle}>{button.shortcut}</kbd>
+                  {button.shortcut && <kbd style={kbdStyle}>{button.shortcut}</kbd>}
                 </button>
               ))}
             </div>
