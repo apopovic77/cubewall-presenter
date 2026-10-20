@@ -39,6 +39,14 @@ const ANCHOR_SPRING = 6;
 /** Field units per second; morph targets can be far away (sphere, helix), so this is generous. */
 const ANCHOR_MAX_SPEED = 40;
 const ANCHOR_SPIN_GAIN = 4;
+/** Classic mode: the morph attraction ends once this share of cubes has settled ... */
+const SETTLED_SHARE = 0.95;
+/** ... i.e. is within this many cube sizes of its place ... */
+const SETTLED_DISTANCE_FACTOR = 0.25;
+/** ... and slower than this (field units / s; the wave keeps targets gently moving); */
+const SETTLED_SPEED = 1;
+/** at the latest this long after the cross-fade ended (jammed cubes must not hover forever). */
+const SETTLE_TIMEOUT_MS = 20_000;
 /** Share of the steering velocity a cube keeps when a morph releases it in classic mode. */
 const RELEASE_DAMPING = 0.15;
 
@@ -89,6 +97,10 @@ export class FieldPhysics {
   private currentMode: FieldPhysicsMode | null = null;
   /** Bodies are currently steered into the layout (gravity off). */
   private steering = false;
+  /** Classic mode: a morph's attraction is still on (until settled or timeout). */
+  private pullUntilSettled = false;
+  private pullSettleDeadline = Number.POSITIVE_INFINITY;
+  private lastSettledShare = 0;
   // Scratch values (no per-frame allocations in the hot loops).
   private readonly rootMatrix = new Matrix();
   private readonly rootInverse = new Matrix();
@@ -147,6 +159,8 @@ export class FieldPhysics {
   disable(): void {
     this.enableGeneration += 1;
     this.currentMode = null;
+    this.pullUntilSettled = false;
+    this.steering = false;
     this.disposeBodies();
     this.disposeGround();
     if (this.stepObserver) this.scene.onAfterPhysicsObservable.remove(this.stepObserver);
@@ -190,10 +204,25 @@ export class FieldPhysics {
     if (!this.engine || !this.currentMode) return;
     this.updateRootMatrices();
     const follow = 1 - Math.exp(-TARGET_FOLLOW_RATE * deltaTime);
-    // Anchor mode holds the layout permanently. Classic mode leaves the cubes to
-    // gravity, but a morph pulls them into the new form (colliding on the way)
-    // and lets them drop again once it is over.
-    const steerToLayout = this.currentMode === 'anchor' || morphing;
+    // The layout position is an attractor; cubes collide on their way to it.
+    // Anchor mode keeps attracting forever. In classic mode a morph switches the
+    // attraction on, and it stays on until the field has settled (most cubes at
+    // their place and nearly at rest) — not just until the layouter's cross-fade
+    // ends — then gravity takes over again.
+    if (morphing) {
+      this.pullUntilSettled = true;
+      this.pullSettleDeadline = Number.POSITIVE_INFINITY;
+    } else if (this.pullUntilSettled) {
+      if (this.pullSettleDeadline === Number.POSITIVE_INFINITY) {
+        this.pullSettleDeadline = performance.now() + SETTLE_TIMEOUT_MS;
+      }
+      if (this.lastSettledShare >= SETTLED_SHARE || performance.now() > this.pullSettleDeadline) {
+        this.pullUntilSettled = false;
+      }
+    }
+    const steerToLayout = this.currentMode === 'anchor' || this.pullUntilSettled;
+    let settled = 0;
+    let steered = 0;
     if (steerToLayout !== this.steering) {
       this.steering = steerToLayout;
       this.bodies.forEach((entry) => {
@@ -233,8 +262,12 @@ export class FieldPhysics {
         entry.target = null;
         this.setMotion(entry, PhysicsMotionType.DYNAMIC);
       }
-      if (steerToLayout) this.steerToLayout(cube, entry);
+      if (steerToLayout) {
+        steered += 1;
+        if (this.steerToLayout(cube, entry)) settled += 1;
+      }
     });
+    this.lastSettledShare = steered > 0 ? settled / steered : 0;
   }
 
   beginDrag(cube: PhysicsCube): void {
@@ -369,9 +402,14 @@ export class FieldPhysics {
   }
 
   /** Anchor mode: velocity spring towards the cube's layout pose, so cubes flow into the new form and still collide. */
-  private steerToLayout(cube: PhysicsCube, entry: CubeBody): void {
+  /** Returns true when the cube is at its place and nearly at rest. */
+  private steerToLayout(cube: PhysicsCube, entry: CubeBody): boolean {
     const target = Vector3.TransformCoordinatesToRef(cube.basePosition, this.rootMatrix, this.tmpPosition);
-    const velocity = target.subtract(entry.node.position).scaleInPlace(ANCHOR_SPRING);
+    const offset = target.subtract(entry.node.position);
+    const atPlace =
+      offset.length() < this.config.cubeSize * SETTLED_DISTANCE_FACTOR &&
+      entry.body.getLinearVelocity().length() < SETTLED_SPEED;
+    const velocity = offset.scaleInPlace(ANCHOR_SPRING);
     const speed = velocity.length();
     if (speed > ANCHOR_MAX_SPEED) velocity.scaleInPlace(ANCHOR_MAX_SPEED / speed);
     entry.body.setLinearVelocity(velocity);
@@ -387,6 +425,7 @@ export class FieldPhysics {
       ? new Vector3(delta.x / sinHalf, delta.y / sinHalf, delta.z / sinHalf).scaleInPlace(angle * ANCHOR_SPIN_GAIN)
       : Vector3.Zero();
     entry.body.setAngularVelocity(spin);
+    return atPlace;
   }
 
   private syncMeshes(): void {
