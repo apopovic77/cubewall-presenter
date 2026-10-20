@@ -26,7 +26,6 @@ import { SphereField } from './layouts/fields/SphereField';
 import { HelixField } from './layouts/fields/HelixField';
 import { ChaosField } from './layouts/fields/ChaosField';
 import { LineWaveField } from './layouts/fields/LineWaveField';
-import { GlassTileFactory } from './tiles/GlassTileFactory';
 import type { TileDescriptor, TileFootprint } from './tiles/TileTypes';
 import { MasonryField } from './layouts/fields/MasonryField';
 import { CubeInstanceRenderer } from './instancing/CubeInstanceRenderer';
@@ -34,6 +33,10 @@ import { FieldPhysics, type FieldPhysicsMode } from './physics/FieldPhysics';
 import { ContentAssigner, type AxisValueInfo } from './content/ContentAssigner';
 import { CubeTextureLoader, type CubeTextureHost } from './cubes/CubeTextureLoader';
 import { FallbackImageSource } from './cubes/FallbackImageSource';
+import { CubeAnimator } from './cubes/CubeAnimator';
+import { CellGeometry } from './cubes/CellGeometry';
+import { TileSet } from './tiles/TileSet';
+import { isSelectableCell } from './cubes/cellUtils';
 import { buildTileFaceUVs, computeFaceUVs } from './cubes/CubeFaceUvs';
 
 
@@ -103,8 +106,6 @@ export class CubeField {
   private contentGeneration = 0;
   /** Geometry mode the instanced renderer is currently set up for. */
   private instancingMode: 'cube' | 'tile' | null = null;
-  /** AR: no glass text tiles (one HTML-rendered texture and mesh each; too heavy for a headset). */
-  private tileCaptionsSuppressed = false;
   private fieldAutoRotateActive = false;
   private fieldAutoRotateSpeed = 0.25;
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
@@ -113,85 +114,22 @@ export class CubeField {
   private readonly fieldEngine: FieldLayoutEngine;
   private fieldTime = 0;
   private readonly fieldMorphDurationSeconds = 6;
-  private readonly glassTileFactory: GlassTileFactory;
-  private tileDescriptors: TileDescriptor[] = [];
-  private tileFootprints: TileFootprint[] = [];
   private stackingAnchors = new Map<string, { x: number; z: number }>();
   private layoutDirty = false;
   private readonly tileMaterialManager: TileMaterialManager;
   private readonly fallback: FallbackImageSource;
   private readonly textures: CubeTextureLoader;
-  private readonly orientationScratch = Vector3.Zero();
-  private readonly orientationQuatScratchA = Quaternion.Identity();
-  private readonly orientationQuatScratchB = Quaternion.Identity();
-  private readonly stackOffsetScratch = new Vector3();
+  private readonly animator: CubeAnimator;
+  private readonly tiles: TileSet;
+  private readonly geometry: CellGeometry;
 
   private getNormalDirection(): number {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
   }
 
-  private applyGeometryToCell(cell: CubeCell, aspectOverride: number | null = null): void {
-    const descriptor = cell.tileDescriptor;
-    if (!descriptor) {
-      cell.mesh.scaling.set(1, 1, 1);
-      const orientation = this.getOrientationRotation();
-      cell.baseRotation.copyFrom(orientation);
-      cell.currentRotation.copyFrom(orientation);
-      cell.targetRotation.copyFrom(orientation);
-      cell.mesh.rotation.copyFrom(orientation);
-      return;
-    }
-
-    const baseSize = this.config.cubeSize;
-    const desiredWidth = this.config.geometryMode === 'tile' ? baseSize : descriptor.footprint.width;
-    let desiredHeight = descriptor.footprint.height || baseSize;
-    const desiredDepth = descriptor.footprint.depth || this.config.tileDepth;
-
-    if (descriptor.kind === 'image') {
-      const aspect = aspectOverride ?? cell.textureAspectRatio ?? null;
-      if (aspect && aspect > 0) {
-        desiredHeight = desiredWidth / aspect;
-        descriptor.footprint.height = desiredHeight;
-        cell.footprint.height = desiredHeight;
-      } else {
-        desiredHeight = baseSize;
-      }
-    } else if (descriptor.kind === 'glassText') {
-      desiredHeight = Math.max(0.05 * baseSize, descriptor.footprint.height ?? baseSize * 0.25);
-      descriptor.footprint.height = desiredHeight;
-    }
-
-    const widthScale = desiredWidth / baseSize;
-    const heightScale = Math.max(0.05, desiredHeight / baseSize);
-    const depthScale = Math.max(0.01, desiredDepth / baseSize);
-
-    cell.mesh.scaling.set(widthScale, heightScale, depthScale);
-    const orientation = this.getOrientationRotation();
-    cell.baseRotation.copyFrom(orientation);
-    cell.currentRotation.copyFrom(orientation);
-    cell.targetRotation.copyFrom(orientation);
-    cell.mesh.rotation.copyFrom(orientation);
-  }
-
-  private getOrientationRotation(): Vector3 {
-    const orientation = this.orientationScratch;
-    const mode = this.config.baseOrientation;
-    if (mode === 'frontUp') {
-      const pitch = this.orientationQuatScratchA;
-      const yaw = this.orientationQuatScratchB;
-      Quaternion.RotationAxisToRef(Vector3.Right(), Math.PI / 2, pitch);
-      Quaternion.RotationAxisToRef(Vector3.Up(), Math.PI, yaw);
-      pitch.multiplyInPlace(yaw);
-      pitch.toEulerAnglesToRef(orientation);
-    } else {
-      orientation.set(0, 0, 0);
-    }
-    return orientation;
-  }
-
   public applyGeometrySettings(): void {
     this.cubes.forEach((cell) => {
-      this.applyGeometryToCell(cell, cell.textureAspectRatio);
+      this.geometry.apply(cell, cell.textureAspectRatio);
       if (this.config.geometryMode === 'tile' && cell.tileDescriptor) {
         this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
       } else {
@@ -253,6 +191,7 @@ export class CubeField {
     this.scene = scene;
     this.config = config;
     this.fallback = new FallbackImageSource(config);
+    this.animator = new CubeAnimator(config);
     this.root = new TransformNode('cubeFieldRoot', this.scene);
     this.root.rotationQuaternion = Quaternion.Identity();
     this.root.position.set(0, 0, 0);
@@ -283,7 +222,8 @@ export class CubeField {
       new ChaosField(),
     ]);
     this.fieldTime = 0;
-    this.glassTileFactory = new GlassTileFactory(scene);
+    this.tiles = new TileSet(scene, config);
+    this.geometry = new CellGeometry(config);
     this.tileMaterialManager = new TileMaterialManager(scene);
     this.textures = new CubeTextureLoader({
       scene,
@@ -294,7 +234,7 @@ export class CubeField {
       host: this.createTextureHost(),
     });
     this.updateRootTransform();
-    this.rebuild(config.gridSize, this.tileDescriptors.length || undefined);
+    this.rebuild(config.gridSize, this.tiles.descriptors.length || undefined);
   }
 
   private updateRootTransform(): void {
@@ -417,8 +357,8 @@ export class CubeField {
       waveFrequencyY: this.config.waveFrequencyY,
       wavePhaseSpread: this.config.wavePhaseSpread,
       globalScale: Math.max(0.1, this.config.fieldGlobalScale),
-      tileFootprints: this.tileFootprints,
-      tileDescriptors: this.tileDescriptors,
+      tileFootprints: this.tiles.footprints,
+      tileDescriptors: this.tiles.descriptors,
       masonryColumnCount: this.config.masonry.columnCount,
       masonryColumnSpacing: this.config.masonry.columnSpacing,
       masonryRowSpacing: this.config.masonry.rowSpacing,
@@ -429,7 +369,7 @@ export class CubeField {
     for (let index = 0; index < this.cubes.length; index += 1) {
       const cube = this.cubes[index];
       const position = positions[index];
-      const descriptor = this.tileDescriptors[index] ?? null;
+      const descriptor = this.tiles.descriptors[index] ?? null;
       if (descriptor?.stacking) {
         if (descriptor.stacking.role === 'leader') {
           this.stackingAnchors.set(descriptor.stacking.groupId, { x: position.x, z: position.z });
@@ -586,9 +526,9 @@ export class CubeField {
     this.physics.dispose();
     this.disposeCubes();
     this.instanceRenderer.dispose();
-    this.disposeTileDescriptors();
+    this.tiles.clear();
     this.root.dispose();
-    this.glassTileFactory.dispose();
+    this.tiles.dispose();
   }
 
   public async setContent(items: CubeContentItem[], options?: Partial<CubeContentOptions>): Promise<void> {
@@ -634,7 +574,7 @@ export class CubeField {
       this.applyTileDescriptorsToCubes();
       this.configureInstancing();
     } else {
-      this.disposeTileDescriptors();
+      this.tiles.clear();
       if (this.cubes.length !== this.config.gridSize * this.config.gridSize) {
         this.rebuild(this.config.gridSize);
       } else {
@@ -643,7 +583,7 @@ export class CubeField {
           cube.footprint = { width: 1, height: 1, depth: 1 };
           cube.mesh.setEnabled(true);
           cube.mesh.isPickable = true;
-          this.applyGeometryToCell(cube, null);
+          this.geometry.apply(cube, null);
           this.tileMaterialManager.restoreCubeMaterials(cube);
         });
         if (this.instancingMode !== this.config.geometryMode) this.configureInstancing();
@@ -656,35 +596,14 @@ export class CubeField {
 
   /** False if a newer setContent started meanwhile (its result is discarded). */
   private async prepareTileDescriptors(items: CubeContentItem[], generation: number): Promise<boolean> {
-    this.disposeTileDescriptors();
+    this.tiles.clear();
     if (this.config.geometryMode !== 'tile') {
       return true;
     }
-    const isStale = () => generation !== this.contentGeneration;
-    const descriptors = await this.glassTileFactory.buildDescriptors(items, {
-      includeCaptions: this.config.tiles.captionsEnabled && !this.tileCaptionsSuppressed,
-      isCancelled: isStale,
-    });
-    if (isStale()) {
-      descriptors.forEach((descriptor) => descriptor.glass?.texture.dispose());
-      return false;
-    }
-    const baseSize = this.config.cubeSize;
-    const imageDepth = this.config.tiles.image.thickness;
-    const textDepth = this.config.tiles.text.thickness;
-    descriptors.forEach((descriptor) => {
-      descriptor.footprint.width = baseSize;
-      descriptor.footprint.depth = descriptor.kind === 'glassText' ? textDepth : imageDepth;
-      if (descriptor.kind === 'glassText') {
-        descriptor.footprint.height = Math.max(0.05 * baseSize, descriptor.footprint.height || baseSize * 0.25);
-      } else {
-        descriptor.footprint.height = baseSize;
-      }
-    });
-    this.tileDescriptors = descriptors;
-    this.tileFootprints = descriptors.map((descriptor) => ({ ...descriptor.footprint }));
-    if (descriptors.length > this.cubes.length) {
-      const requiredGridSize = Math.ceil(Math.sqrt(descriptors.length));
+    const current = await this.tiles.build(items, () => generation !== this.contentGeneration);
+    if (!current) return false;
+    if (this.tiles.descriptors.length > this.cubes.length) {
+      const requiredGridSize = Math.ceil(Math.sqrt(this.tiles.descriptors.length));
       if (requiredGridSize > this.config.gridSize) {
         this.config.gridSize = Math.min(this.config.maxGridSize, requiredGridSize);
         this.rebuild(this.config.gridSize);
@@ -692,16 +611,6 @@ export class CubeField {
     }
     this.layoutDirty = true;
     return true;
-  }
-
-  private disposeTileDescriptors(): void {
-    this.tileDescriptors.forEach((descriptor) => {
-      if (descriptor.glass) {
-        descriptor.glass.texture.dispose();
-      }
-    });
-    this.tileDescriptors = [];
-    this.tileFootprints = [];
   }
 
   private switchFieldForGeometry(): void {
@@ -719,10 +628,10 @@ export class CubeField {
   }
 
   private applyTileDescriptorsToCubes(): void {
-    const count = Math.min(this.tileDescriptors.length, this.cubes.length);
+    const count = Math.min(this.tiles.descriptors.length, this.cubes.length);
     this.stackingAnchors.clear();
     for (let index = 0; index < count; index += 1) {
-      const descriptor = this.tileDescriptors[index];
+      const descriptor = this.tiles.descriptors[index];
       const cube = this.cubes[index];
       cube.tileDescriptor = descriptor;
       cube.footprint = { ...descriptor.footprint };
@@ -735,7 +644,7 @@ export class CubeField {
         cube.material.alpha = descriptor.glass.alpha;
         cube.material.emissiveColor = descriptor.glass.tint.scale(0.2);
       }
-      this.applyGeometryToCell(cube, cube.textureAspectRatio);
+      this.geometry.apply(cube, cube.textureAspectRatio);
       if (this.config.geometryMode === 'tile') {
         this.tileMaterialManager.applyTileMaterials(cube, descriptor);
       } else {
@@ -787,7 +696,7 @@ export class CubeField {
   }
 
   private isSelectableCube(cube: CubeCell): boolean {
-    return cube.tileDescriptor?.kind !== 'glassText';
+    return isSelectableCell(cube);
   }
 
   private createTextureHost(): CubeTextureHost {
@@ -804,7 +713,7 @@ export class CubeField {
         return field.cubes;
       },
       isInstanced: (cell) => this.isInstanced(cell),
-      applyGeometryToCell: (cell, aspect) => this.applyGeometryToCell(cell, aspect),
+      applyGeometryToCell: (cell, aspect) => this.geometry.apply(cell, aspect),
       applyTileAspect: (cell, aspect) => this.applyTileAspect(cell, aspect),
     };
   }
@@ -822,8 +731,8 @@ export class CubeField {
     descriptor.footprint.height = height;
     cell.footprint.height = height;
     const index = this.cubes.indexOf(cell);
-    if (index >= 0) this.tileFootprints[index] = { ...descriptor.footprint };
-    this.applyGeometryToCell(cell, aspect);
+    if (index >= 0) this.tiles.setImageAspect(index, aspect);
+    this.geometry.apply(cell, aspect);
     this.layoutDirty = true;
   }
 
@@ -849,6 +758,10 @@ export class CubeField {
     });
     this.instanceRenderer.setGeometry(this.config.cubeSize, computeFaceUVs(sidePattern, mirrorTopBottom));
     this.textures.refreshTextureMappings();
+  }
+
+  public triggerRipple(center: CubeCell): void {
+    this.animator.triggerRipple(this.cubes, center);
   }
 
   public getSelectionInfo(): CubeSelectionInfo | null {
@@ -959,45 +872,6 @@ export class CubeField {
     });
   }
 
-  public triggerRipple(center: CubeCell): void {
-    if (!this.isSelectableCube(center)) {
-      return;
-    }
-    const radius = this.config.interactionRadius;
-
-    if (center.isSelected) {
-      center.interactionActive = false;
-      center.interactionPhase = 0;
-      center.interactionTime = 0;
-    } else {
-      center.interactionActive = true;
-      center.interactionPhase = 1;
-      center.interactionTime = 0;
-      center.targetPosition = center.currentPosition.clone();
-      center.targetRotation = center.currentRotation.clone();
-    }
-
-    this.cubes.forEach((cube) => {
-      if (cube === center || cube.isSelected || !this.isSelectableCube(cube)) return;
-      const distX = cube.gridX - center.gridX;
-      const distZ = cube.gridZ - center.gridZ;
-      const distance = Math.sqrt(distX * distX + distZ * distZ);
-      if (distance > radius) return;
-
-      const falloff = Math.pow(1 - distance / radius, 2);
-      cube.interactionActive = true;
-      cube.interactionPhase = 0;
-      cube.interactionTime = 0;
-
-      const randomRotate = (Math.random() - 0.5) * this.config.interactionRotateAmount;
-      cube.targetRotation = cube.currentRotation.clone();
-      cube.targetRotation.x += randomRotate * falloff;
-      cube.targetRotation.z -= randomRotate * falloff;
-      cube.targetPosition = cube.currentPosition.clone();
-      cube.targetPosition.y += this.config.interactionLift * falloff;
-    });
-  }
-
   public update(deltaTime: number, sceneTime: number): void {
     if (this.fieldAutoRotateActive && deltaTime > 0) {
       const currentRotation = this.root.rotationQuaternion ?? Quaternion.Identity();
@@ -1015,127 +889,13 @@ export class CubeField {
     // The layout (and a running morph) keeps advancing under physics; only the
     // mesh poses then come from the bodies instead of the layout.
     this.updateFieldLayout(deltaTime, refreshLayout, !this.physics.active);
-    const rotationWaveEnabled = this.config.waveRotationEnabled;
     const normalDirection = this.getNormalDirection();
     if (this.physics.active) {
       const lift = Math.min(this.config.selectedCubeLift, this.config.cubeSize * 0.6);
       this.physics.drive(deltaTime, this.fieldEngine.isMorphing(), lift);
       return;
     }
-    // Frame-rate independent smoothing; a plain `speed * dt` overshoots on long frames.
-    const interactionBlend = 1 - Math.exp(-this.config.interactionLerpSpeed * deltaTime);
-
-    this.cubes.forEach((cube) => {
-      // A cube held in an AR hand is posed by holdCube; it glides back once released.
-      if (cube.isBeingDragged) return;
-      if (!this.isSelectableCube(cube)) {
-        const descriptor = cube.tileDescriptor;
-        const stacking = descriptor?.stacking;
-        if (stacking?.inheritAnchorPosition && stacking.groupId) {
-          const leader = this.cubes.find(
-            (candidate) =>
-              candidate.tileDescriptor?.stacking?.groupId === stacking.groupId &&
-              candidate.tileDescriptor?.stacking?.role === 'leader',
-          );
-          if (leader) {
-            const offset = this.stackOffsetScratch;
-            offset.copyFrom(cube.basePosition).subtractInPlace(leader.basePosition);
-            cube.currentPosition.copyFrom(leader.currentPosition);
-            cube.currentPosition.addInPlace(offset);
-            cube.targetPosition.copyFrom(cube.currentPosition);
-            cube.currentRotation.copyFrom(leader.currentRotation);
-            cube.targetRotation.copyFrom(leader.currentRotation);
-            cube.mesh.position.copyFrom(cube.currentPosition);
-            cube.mesh.rotation.copyFrom(cube.currentRotation);
-            return;
-          }
-        }
-        cube.currentPosition.copyFrom(cube.basePosition);
-        cube.targetPosition.copyFrom(cube.basePosition);
-        cube.currentRotation.copyFrom(cube.baseRotation);
-        cube.mesh.position.copyFrom(cube.basePosition);
-        cube.mesh.rotation.copyFrom(cube.currentRotation);
-        return;
-      }
-      cube.individualXRotAccumulator = rotationWaveEnabled
-        ? cube.individualXRotAccumulator + this.config.individualXRotSpeed * deltaTime
-        : 0;
-
-      if (cube.isSelected) {
-        cube.selectionProgress = Math.min(1, cube.selectionProgress + deltaTime * 3);
-      } else {
-        cube.selectionProgress = Math.max(0, cube.selectionProgress - deltaTime * 3);
-      }
-
-      const selectionEased = easeOutCubic(cube.selectionProgress);
-      let selectedYRotation = 0;
-      if (cube.isSelected) {
-        if (this.config.selectionSpinEnabled) {
-          cube.physicsSpinAngle += this.config.selectedCubeRotation * deltaTime;
-          selectedYRotation = cube.physicsSpinAngle;
-        } else if (rotationWaveEnabled) {
-          selectedYRotation = this.config.selectedCubeRotation * selectionEased;
-        }
-      } else if (rotationWaveEnabled) {
-        selectedYRotation = this.config.selectedCubeRotation * selectionEased;
-      }
-      const selectionOffset = new Vector3(
-        0,
-        normalDirection * this.config.selectedCubeLift * selectionEased,
-        0,
-      );
-
-      const waveRotX = rotationWaveEnabled
-        ? this.config.waveAmplitudeRot *
-          Math.sin(cube.basePosition.z * this.config.waveFrequencyRot + sceneTime * 1.2 + cube.wavePhase)
-        : 0;
-      const waveRotZ = rotationWaveEnabled
-        ? this.config.waveAmplitudeRot *
-          Math.cos(cube.basePosition.x * this.config.waveFrequencyRot + sceneTime * 1.1 + cube.wavePhase * 0.6)
-        : 0;
-
-      const intendedPosition = cube.basePosition.clone().add(selectionOffset);
-
-      const intendedRotation = cube.baseRotation.clone();
-      intendedRotation.x += cube.individualXRotAccumulator + waveRotX;
-      intendedRotation.y += selectedYRotation;
-      intendedRotation.z += waveRotZ;
-
-      if (cube.interactionActive) {
-        cube.interactionTime += deltaTime;
-        
-        // Phase 0: Lift up (0-0.3s)
-        if (cube.interactionPhase === 0 && cube.interactionTime > 0.3) {
-          cube.interactionPhase = 1;
-          cube.interactionTime = 0;
-        }
-        // Phase 1: Hold (0-0.2s)
-        else if (cube.interactionPhase === 1 && cube.interactionTime > 0.2) {
-          cube.interactionPhase = 2;
-          cube.interactionTime = 0;
-          // Set target back to intended position for smooth return
-          cube.targetPosition = intendedPosition.clone();
-          cube.targetRotation = intendedRotation.clone();
-        }
-        // Phase 2: Return (0-0.5s)
-        else if (cube.interactionPhase === 2 && cube.interactionTime > 0.5) {
-          cube.interactionActive = false;
-          cube.interactionPhase = 0;
-          cube.interactionTime = 0;
-        }
-      }
-
-      const targetPosition = cube.interactionActive ? cube.targetPosition : intendedPosition;
-      const targetRotation = cube.interactionActive ? cube.targetRotation : intendedRotation;
-
-      cube.currentPosition = Vector3.Lerp(cube.currentPosition, targetPosition, interactionBlend);
-      cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, targetRotation.x, interactionBlend);
-      cube.currentRotation.y = Scalar.Lerp(cube.currentRotation.y, targetRotation.y, interactionBlend);
-      cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, targetRotation.z, interactionBlend);
-
-      cube.mesh.position.copyFrom(cube.currentPosition);
-      cube.mesh.rotation.copyFrom(cube.currentRotation);
-    });
+    this.animator.animate(this.cubes, deltaTime, sceneTime, normalDirection);
   }
 
   private applyContentToCubes(): void {
@@ -1249,7 +1009,7 @@ export class CubeField {
       cube.mesh.rotationQuaternion = null;
       cube.mesh.rotation.copyFrom(localRotation);
       cube.currentRotation.copyFrom(localRotation);
-      this.applyGeometryToCell(cube, cube.textureAspectRatio);
+      this.geometry.apply(cube, cube.textureAspectRatio);
       if (cube.tileDescriptor) {
         this.tileMaterialManager.applyTileMaterials(cube, cube.tileDescriptor);
       }
@@ -1275,7 +1035,7 @@ export class CubeField {
   }
 
   public setTileCaptionsSuppressed(suppressed: boolean): void {
-    this.tileCaptionsSuppressed = suppressed;
+    this.tiles.setCaptionsSuppressed(suppressed);
   }
 
   /** AR: a hand (or ray) takes this cube; it follows holdCube until releaseCube. */
@@ -1323,9 +1083,3 @@ export class CubeField {
   }
 
 }
-
-function easeOutCubic(t: number): number {
-  const inv = 1 - t;
-  return 1 - inv * inv * inv;
-}
-
