@@ -29,7 +29,8 @@ const GRAVITY = -9.81;
 const STEP_SECONDS = 1 / 60;
 /** Ground slab: top face at the ground height. */
 const GROUND_HALF_EXTENT = 200;
-const GROUND_THICKNESS = 1;
+/** Thick enough that fast cubes do not tunnel through it in one step. */
+const GROUND_THICKNESS = 6;
 /** Bodies that fall this far below the ground are put back above the field. */
 const KILL_DEPTH = 30;
 /** Response rate (1/s) of animated targets (selection lift, drag) and of the anchor steering. */
@@ -38,6 +39,8 @@ const ANCHOR_SPRING = 6;
 /** Field units per second; morph targets can be far away (sphere, helix), so this is generous. */
 const ANCHOR_MAX_SPEED = 40;
 const ANCHOR_SPIN_GAIN = 4;
+/** Share of the steering velocity a cube keeps when a morph releases it in classic mode. */
+const RELEASE_DAMPING = 0.15;
 
 let havokModule: Promise<unknown> | null = null;
 
@@ -84,6 +87,8 @@ export class FieldPhysics {
   private groundY = 0;
   private enableGeneration = 0;
   private currentMode: FieldPhysicsMode | null = null;
+  /** Bodies are currently steered into the layout (gravity off). */
+  private steering = false;
   // Scratch values (no per-frame allocations in the hot loops).
   private readonly rootMatrix = new Matrix();
   private readonly rootInverse = new Matrix();
@@ -121,6 +126,7 @@ export class FieldPhysics {
       this.stepObserver = this.scene.onAfterPhysicsObservable.add(() => this.syncMeshes());
     }
     this.currentMode = mode;
+    this.steering = mode === 'anchor';
     this.attach(cubes);
     return true;
   }
@@ -128,12 +134,13 @@ export class FieldPhysics {
   setMode(mode: FieldPhysicsMode): void {
     if (!this.currentMode) return;
     this.currentMode = mode;
+    this.steering = mode === 'anchor';
     this.bodies.forEach((entry) => this.applyGravity(entry));
   }
 
   /** Anchor mode floats the cubes into the layout (no sag); classic mode lets them fall. */
   private applyGravity(entry: CubeBody): void {
-    entry.body.setGravityFactor(this.currentMode === 'anchor' ? 0 : 1);
+    entry.body.setGravityFactor(this.steering ? 0 : 1);
   }
 
   /** Stops the simulation; cubes keep their current pose. */
@@ -179,13 +186,25 @@ export class FieldPhysics {
    * into the layout (anchor mode, also while it morphs), follows drags.
    * Layout poses come from each cube's basePosition and baseRotation (root space).
    */
-  drive(deltaTime: number, liftHeight: number): void {
+  drive(deltaTime: number, morphing: boolean, liftHeight: number): void {
     if (!this.engine || !this.currentMode) return;
     this.updateRootMatrices();
     const follow = 1 - Math.exp(-TARGET_FOLLOW_RATE * deltaTime);
-    // Anchor mode holds the layout permanently (also after a morph has finished);
-    // classic mode leaves the cubes to gravity.
-    const steerToLayout = this.currentMode === 'anchor';
+    // Anchor mode holds the layout permanently. Classic mode leaves the cubes to
+    // gravity, but a morph pulls them into the new form (colliding on the way)
+    // and lets them drop again once it is over.
+    const steerToLayout = this.currentMode === 'anchor' || morphing;
+    if (steerToLayout !== this.steering) {
+      this.steering = steerToLayout;
+      this.bodies.forEach((entry) => {
+        this.applyGravity(entry);
+        // Released from steering: drop from (nearly) rest instead of flying on at steering speed.
+        if (!steerToLayout && entry.motion === PhysicsMotionType.DYNAMIC) {
+          entry.body.setLinearVelocity(entry.body.getLinearVelocity().scaleInPlace(RELEASE_DAMPING));
+          entry.body.setAngularVelocity(entry.body.getAngularVelocity().scaleInPlace(RELEASE_DAMPING));
+        }
+      });
+    }
 
     this.bodies.forEach((entry, cube) => {
       if (cube.isBeingDragged) {
