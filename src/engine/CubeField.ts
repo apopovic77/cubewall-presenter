@@ -36,6 +36,7 @@ import { FallbackImageSource } from './cubes/FallbackImageSource';
 import { CubeAnimator } from './cubes/CubeAnimator';
 import { CellGeometry } from './cubes/CellGeometry';
 import { TileSet } from './tiles/TileSet';
+import { createActivationFront } from './transition/ActivationFront';
 import { isSelectableCell } from './cubes/cellUtils';
 import { buildTileFaceUVs, computeFaceUVs } from './cubes/CubeFaceUvs';
 
@@ -47,6 +48,9 @@ export interface CubeSelectionInfo {
   readonly textureUrl: string | null;
   readonly content: CubeContentItem | null;
 }
+
+/** Shapes without a meaningful element order: cubes may claim any slot. */
+const FREE_FORM_FIELDS = new Set(['sphere', 'spiral', 'helix', 'chaos']);
 
 export interface CubeCell {
   mesh: Mesh;
@@ -282,10 +286,12 @@ export class CubeField {
     this.root.rotationQuaternion = rotation;
   }
 
-  public startFieldMorph(): { current: string; next: string } | null {
-    if (this.fieldEngine.isMorphing()) {
-      return null;
-    }
+  /**
+   * Next shape in the morph cycle. `viewerWorld`: where the viewer is, so the
+   * activation front starts on their side. A running morph is interrupted:
+   * the new one starts from wherever the cubes are.
+   */
+  public startFieldMorph(viewerWorld: Vector3 | null = null): { current: string; next: string } | null {
     const total = this.fieldEngine.getFieldCount();
     if (total <= 1) {
       return null;
@@ -293,15 +299,18 @@ export class CubeField {
     const currentIndex = this.fieldEngine.getCurrentFieldIndex();
     // The wave line (all cubes in one row, ~700 units for 625 cubes) has its own
     // action (F8); in the morph cycle it just sends everything out of view.
-    let nextIndex = (currentIndex + 1) % total;
+    const fromIndex = this.fieldEngine.isMorphing()
+      ? this.fieldEngine.findFieldIndex(this.fieldEngine.getNextField().id)
+      : currentIndex;
+    let nextIndex = (fromIndex + 1) % total;
     if (this.fieldEngine.getFieldId(nextIndex) === 'line') nextIndex = (nextIndex + 1) % total;
-    this.fieldEngine.startMorphTo(nextIndex, this.fieldMorphDurationSeconds);
+    this.startTransitionTo(nextIndex, viewerWorld);
     const current = this.fieldEngine.getCurrentField().name;
     const next = this.fieldEngine.getNextField().name;
     return { current, next };
   }
 
-  public startLineWaveField(): boolean {
+  public startLineWaveField(viewerWorld: Vector3 | null = null): boolean {
     const targetIndex = this.fieldEngine.findFieldIndex('line');
     if (targetIndex < 0) {
       return false;
@@ -309,8 +318,34 @@ export class CubeField {
     if (!this.fieldEngine.isMorphing() && this.fieldEngine.getCurrentFieldIndex() === targetIndex) {
       return false;
     }
-    this.fieldEngine.startMorphTo(targetIndex, this.fieldMorphDurationSeconds);
+    this.startTransitionTo(targetIndex, viewerWorld);
     return true;
+  }
+
+  /**
+   * Transition into field `targetIndex`: cubes leave from their current pose,
+   * released by the activation front; in free-form shapes they claim the
+   * nearest free slot (ordered shapes keep the index order, which carries
+   * meaning: rows by date, columns).
+   */
+  private startTransitionTo(targetIndex: number, viewerWorld: Vector3 | null): void {
+    const from = this.cubes.map((cube) => cube.mesh.position.clone());
+    const viewer = viewerWorld
+      ? Vector3.TransformCoordinates(viewerWorld, this.root.computeWorldMatrix(true).clone().invert())
+      : null;
+    const front = createActivationFront(this.config.morphFront, viewer, from, this.config.morphFrontSweepSeconds);
+    const targetId = this.fieldEngine.getFieldId(targetIndex) ?? '';
+    this.fieldEngine.startTransition(targetIndex, this.currentFieldTime(), {
+      from,
+      front,
+      assignSlots: FREE_FORM_FIELDS.has(targetId),
+      travelSeconds: front.mode === 'none' ? this.fieldMorphDurationSeconds : this.config.morphTravelSeconds,
+    });
+  }
+
+  /** The time the layout is sampled at (waves frozen when wave motion is off). */
+  private currentFieldTime(): number {
+    return this.config.wavePositionEnabled ? this.fieldTime : 0;
   }
 
   public isFieldAutoRotating(): boolean {
@@ -364,7 +399,7 @@ export class CubeField {
       masonryRowSpacing: this.config.masonry.rowSpacing,
     });
 
-    const effectiveTime = this.config.wavePositionEnabled && !initial ? this.fieldTime : 0;
+    const effectiveTime = initial ? 0 : this.currentFieldTime();
     const positions = this.fieldEngine.sampleAll(this.cubes.length, effectiveTime);
     for (let index = 0; index < this.cubes.length; index += 1) {
       const cube = this.cubes[index];

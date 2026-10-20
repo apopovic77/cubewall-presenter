@@ -104,6 +104,43 @@ Extracted classes do not reach back into their owner. They get either plain valu
 4. **Same action, one path.** New user actions are added to `ControlAction` / `ArMenuAction` and handled in `runAction`; keyboard, control panel and AR menu call it.
 5. **Behaviour-preserving refactors are verified** with the regression run (layout, morph, physics modes, tiles, selection, textures) before committing; see `README.md`.
 
-## Planned: field and activation-front system
+## Transitions: activation front and slot claiming
 
-Transitions become a `TransitionSpec` of source field, target field, a slot assignment (cubes claim the nearest free slot instead of keeping their index) and an `ActivationFront` (plane, sphere, curve) that decides when each cube starts. A `MotionBackend` runs it: GPU (vertex shader, no physics), CPU kinematic, or physics (attractor + collisions). Fields and fronts provide both a TypeScript and a GLSL form so the GPU and CPU paths stay identical.
+`engine/transition/` holds the pieces of a shape change; `FieldLayoutEngine` runs them.
+
+```mermaid
+classDiagram
+  class FieldLayoutEngine {
+    startTransition(target, time, options)
+    sampleAll(count, time)
+    slotOf: element → slot
+  }
+  class FieldTransition {
+    from: positions at start
+    slots: element → target slot
+    delays: start time per element
+    sampleToRef(index, target, out)
+  }
+  class ActivationFront {
+    <<interface>>
+    delays(positions)
+  }
+  class SphereFront
+  class PlaneFront
+  class ImmediateFront
+  class assignSlots {
+    <<function>>
+  }
+  FieldLayoutEngine --> FieldTransition
+  FieldLayoutEngine ..> assignSlots
+  FieldLayoutEngine ..> ActivationFront
+  ActivationFront <|.. SphereFront
+  ActivationFront <|.. PlaneFront
+  ActivationFront <|.. ImmediateFront
+```
+
+- **Start:** a transition begins from where the elements are (mesh poses), so an interrupted morph continues smoothly instead of jumping back.
+- **Activation front:** decides when each element starts, like an activation volume in a VFX simulation. A sphere or plane enters on the viewer's side (camera, or the head in AR) and crosses the field in `morphFrontSweepSeconds`; each element then travels `morphTravelSeconds` with its own ease. `none` starts everything at once.
+- **Slot claiming:** in free-form shapes (sphere, spiral, helix, chaos) every element claims the nearest free slot, in activation order, through a uniform grid of the slots (≈15 ms for 625 elements; 20–40 % shorter paths from the grid). Ordered shapes (grid, line, masonry) keep the index order, because rows and columns carry meaning (publishing days).
+- **Physics:** the per-element target flows into `FieldPhysics` as the attractor, so fronts work in both physics modes as well.
+- **Next:** a GPU backend can evaluate the same `FieldTransition` data in the vertex shader (per-instance from-position, slot and delay; fields and fronts as GLSL), for scenes without physics and with far more elements. Picking, grabbing and physics keep needing CPU positions.

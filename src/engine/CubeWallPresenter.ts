@@ -17,6 +17,7 @@ import { BillboardConnector } from './presentation/BillboardConnector';
 import { AxisLabelController } from './presentation/AxisLabelController';
 import { AutoSelectionTimer } from './selection/AutoSelectionTimer';
 import { applySettingsToConfig, mapUvLayout } from '../config/applySettingsToConfig';
+import type { ActivationFrontMode } from './transition/ActivationFront';
 import { PointerInteractionController } from './input/PointerInteractionController';
 import type { ArMenuAction, ArMenuState } from './xr/menu/ArMenuModel';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
@@ -457,6 +458,7 @@ export class CubeWallPresenter {
       wavePosition: this.config.wavePositionEnabled,
       waveRotation: this.config.waveRotationEnabled,
       physicsMode: this.physicsMode,
+      frontMode: this.config.morphFront,
     };
   }
 
@@ -662,7 +664,7 @@ export class CubeWallPresenter {
   }
 
   public triggerLineWaveField(): void {
-    const started = this.cubeField.startLineWaveField();
+    const started = this.cubeField.startLineWaveField(this.viewerPosition());
     if (started) {
       this.logDebug('[Field] Morphing to Wave Line');
     } else {
@@ -675,10 +677,27 @@ export class CubeWallPresenter {
     this.logDebug(active ? '[Field] Auto-rotation enabled' : '[Field] Auto-rotation disabled');
   }
 
+  /** Activation front of shape changes: sphere → plane → none (all at once). */
+  public cycleMorphFront(): ActivationFrontMode {
+    const order: ActivationFrontMode[] = ['sphere', 'plane', 'none'];
+    this.config.morphFront = order[(order.indexOf(this.config.morphFront) + 1) % order.length];
+    this.refreshArMenu();
+    return this.config.morphFront;
+  }
+
+  public getMorphFront(): ActivationFrontMode {
+    return this.config.morphFront;
+  }
+
+  /** The active camera (desktop orbit camera or the AR head): shape changes start on this side. */
+  private viewerPosition(): Vector3 | null {
+    return this.scene.activeCamera?.globalPosition.clone() ?? null;
+  }
+
   public startFieldMorph(): void {
-    const result = this.cubeField.startFieldMorph();
+    const result = this.cubeField.startFieldMorph(this.viewerPosition());
     if (!result) {
-      this.logDebug('[Field] Morph request ignored (already morphing or no alternate field)');
+      this.logDebug('[Field] Morph request ignored (no alternate field)');
       return;
     }
     this.logDebug(`[Field] Morphing ${result.current} → ${result.next}`);

@@ -15,6 +15,7 @@ export type ArMenuAction =
   | 'auto-rotate'
   | 'morph'
   | 'line-wave'
+  | 'front-cycle'
   | 'wave-position'
   | 'wave-rotation'
   | 'physics-cycle'
@@ -34,6 +35,7 @@ export interface ArMenuState {
   wavePosition: boolean;
   waveRotation: boolean;
   physicsMode: ArPhysicsMode;
+  frontMode: 'sphere' | 'plane' | 'none';
 }
 
 export interface ArMenuRect {
@@ -65,6 +67,12 @@ const ROW_HEIGHT = 86;
 const SECTION_TITLE_HEIGHT = 40;
 const TITLE_BLOCK_HEIGHT = 84;
 
+const FRONT_LABELS: Record<ArMenuState['frontMode'], string> = {
+  sphere: 'Kugel von dir aus',
+  plane: 'Ebene von dir aus',
+  none: 'aus · alle zugleich',
+};
+
 const PHYSICS_LABELS: Record<ArPhysicsMode, string> = {
   off: 'Aus · antippen: fallen lassen',
   classic: 'Fallen · antippen: Anker',
@@ -90,7 +98,7 @@ function rows(state: ArMenuState): RowSpec[] {
       cells: [item('layout-matrix', 'Raster', state.layoutMode === 'matrix'), item('layout-masonry', 'Masonry', state.layoutMode === 'masonry')],
     },
     { cells: [item('layout-axis', 'Zeitachse', state.layoutMode === 'axis'), item('auto-rotate', 'Auto-Rotation', state.autoRotate)] },
-    { cells: [item('morph', 'Morph', false, 'nächste Form'), item('line-wave', 'Linienwelle')] },
+    { cells: [item('morph', 'Morph', false, 'nächste Form'), item('front-cycle', 'Front', state.frontMode !== 'none', FRONT_LABELS[state.frontMode])] },
     {
       section: 'Bewegung',
       cells: [item('wave-position', 'Welle', state.wavePosition), item('wave-rotation', 'Wellen-Drehung', state.waveRotation)],

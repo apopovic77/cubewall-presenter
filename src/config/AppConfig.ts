@@ -1,4 +1,5 @@
 import { Color3 } from '@babylonjs/core/Maths/math.color';
+import type { ActivationFrontMode } from '../engine/transition/ActivationFront';
 
 export type BackgroundType = 'solid' | 'gradient';
 export type DepthOfFieldBlurLevel = 'low' | 'medium' | 'high';
@@ -86,6 +87,12 @@ export interface CubeWallConfig {
   wavePositionEnabled: boolean;
   waveRotationEnabled: boolean;
   selectionSpinEnabled: boolean;
+  /** Activation front of shape changes: which cubes start first ('none' = all at once). */
+  morphFront: ActivationFrontMode;
+  /** Time the front takes to cross the field. */
+  morphFrontSweepSeconds: number;
+  /** Flight time of one cube once the front has reached it. */
+  morphTravelSeconds: number;
   wavePhaseSpread: number;
   fieldAnimationSpeed: number;
   fieldGlobalScale: number;
@@ -204,6 +211,9 @@ export const appConfig: CubeWallConfig = {
   wavePositionEnabled: true,
   waveRotationEnabled: true,
   selectionSpinEnabled: true,
+  morphFront: 'sphere',
+  morphFrontSweepSeconds: 3,
+  morphTravelSeconds: 3,
   wavePhaseSpread: 0.12,
   fieldAnimationSpeed: 1,
   fieldGlobalScale: 1,

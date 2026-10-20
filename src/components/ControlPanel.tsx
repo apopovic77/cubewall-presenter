@@ -10,6 +10,7 @@ interface ControlPanelProps {
   waveRotationEnabled: boolean;
   layoutMode: string;
   physicsMode: ArPhysicsMode;
+  morphFront: 'sphere' | 'plane' | 'none';
   onAction: (action: ControlAction) => void;
 }
 
@@ -19,6 +20,12 @@ interface ButtonSpec {
   shortcut: string;
   active?: boolean;
 }
+
+const FRONT_LABELS: Record<'sphere' | 'plane' | 'none', string> = {
+  sphere: 'Front: Kugel',
+  plane: 'Front: Ebene',
+  none: 'Front: aus',
+};
 
 const PHYSICS_LABELS: Record<ArPhysicsMode, string> = {
   off: 'Physik: aus',
@@ -36,6 +43,7 @@ export function ControlPanel({
   waveRotationEnabled,
   layoutMode,
   physicsMode,
+  morphFront,
   onAction,
 }: ControlPanelProps) {
   const [open, setOpen] = useState(true);
@@ -51,6 +59,7 @@ export function ControlPanel({
         { action: 'random-orientation', label: 'Zufällig drehen', shortcut: '⇧F6' },
         { action: 'morph', label: 'Morph', shortcut: 'F7' },
         { action: 'line-wave', label: 'Linienwelle', shortcut: 'F8' },
+        { action: 'front-cycle', label: FRONT_LABELS[morphFront], shortcut: 'F10', active: morphFront !== 'none' },
       ],
     },
     {

@@ -22,7 +22,7 @@ import { loadServerSettings, saveServerSettings } from './utils/serverSettings';
 import type { CubeContentItem } from './types/content';
 import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
-import type { ArMenuAction, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
+import type { ArMenuAction, ArMenuState, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
 import { mapUvLayout } from './config/applySettingsToConfig';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
@@ -209,6 +209,7 @@ export default function App() {
   const [settings, setSettings] = useState<PresenterSettings | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [physicsMode, setPhysicsMode] = useState<ArPhysicsMode>('off');
+  const [morphFront, setMorphFront] = useState<ArMenuState['frontMode']>(appConfig.morphFront);
   const [panelPosition, setPanelPosition] = useState({ x: 24, y: 24 });
   const [debugLines, setDebugLines] = useState<string[]>([]);
   const [billboardState, setBillboardState] = useState<BillboardDisplayState | null>(null);
@@ -727,6 +728,9 @@ export default function App() {
         case 'line-wave':
           presenter?.triggerLineWaveField();
           break;
+        case 'front-cycle':
+          if (presenter) setMorphFront(presenter.cycleMorphFront());
+          break;
         case 'wave-position':
           setSettings((prev) => (prev ? { ...prev, wavePositionEnabled: !prev.wavePositionEnabled } : prev));
           break;
@@ -777,6 +781,7 @@ export default function App() {
         F3: 'physics-cycle',
         F7: 'morph',
         F8: 'line-wave',
+        F10: 'front-cycle',
         n: 'next-cube',
         N: 'next-cube',
         m: 'random-cube',
@@ -905,6 +910,7 @@ export default function App() {
         waveRotationEnabled={waveRotationEnabled}
         layoutMode={effectiveLayoutMode ?? 'matrix'}
         physicsMode={physicsMode}
+        morphFront={morphFront}
         onAction={runAction}
       />
       <CanvasStage

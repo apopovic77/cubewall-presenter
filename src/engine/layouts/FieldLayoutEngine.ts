@@ -1,5 +1,8 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { TileDescriptor, TileFootprint } from '../tiles/TileTypes';
+import { FieldTransition } from '../transition/FieldTransition';
+import { ImmediateFront, type ActivationFront } from '../transition/ActivationFront';
+import { assignSlots } from '../transition/SlotAssigner';
 
 export interface FieldContext {
   totalCount: number;
@@ -36,18 +39,35 @@ const DEFAULT_CONTEXT: FieldContext = {
 
 const DEFAULT_DURATION = 6;
 
+/** How a transition into another field runs. */
+export interface TransitionOptions {
+  /** Where the elements are now (field space); they travel from here. */
+  from: Vector3[];
+  front: ActivationFront;
+  /** Let elements claim the nearest free slot (free-form shapes) instead of keeping their index. */
+  assignSlots: boolean;
+  /** Travel time of one element once the front has reached it. */
+  travelSeconds: number;
+}
+
+/**
+ * Shapes the field can take (one FieldDefinition each: element index → position)
+ * and the transition between two of them.
+ *
+ * Elements map to slots of the current field through `slotOf` (identity unless
+ * a transition let them claim slots). A transition moves every element from its
+ * position at the start to its slot in the target field, released by an
+ * activation front; an interrupted transition simply starts the next one from
+ * wherever the elements are.
+ */
 export class FieldLayoutEngine {
   private readonly fields: FieldDefinition[];
   private context: FieldContext;
   private samples: Vector3[] = [];
   private currentIndex = 0;
-  private nextIndex = 0;
-  private morphProgress = 0;
-  private morphDuration = DEFAULT_DURATION;
-  private morphElapsed = 0;
-  private morphing = false;
-  private readonly currentScratch = new Vector3();
-  private readonly nextScratch = new Vector3();
+  private slotOf: Int32Array<ArrayBufferLike> = new Int32Array(0);
+  private transition: FieldTransition | null = null;
+  private readonly targetScratch = new Vector3();
 
   constructor(fields: FieldDefinition[]) {
     if (fields.length === 0) {
@@ -61,8 +81,9 @@ export class FieldLayoutEngine {
     return this.fields[this.currentIndex];
   }
 
+  /** Target of the running transition, or the current field. */
   public getNextField(): FieldDefinition {
-    return this.fields[this.nextIndex];
+    return this.fields[this.transition?.targetIndex ?? this.currentIndex];
   }
 
   public getFieldCount(): number {
@@ -81,42 +102,58 @@ export class FieldLayoutEngine {
     this.context = { ...this.context, ...patch };
   }
 
-  public startMorphTo(targetIndex: number, durationSeconds: number = DEFAULT_DURATION): void {
+  /** Where every slot of field `index` is at `time` (field space). */
+  public sampleField(index: number, count: number, time: number): Vector3[] {
+    const field = this.fields[index];
+    const context = { ...this.context, totalCount: count };
+    return Array.from({ length: count }, (_, slot) => field.sample(slot, time, context, new Vector3()));
+  }
+
+  /** Starts a transition into field `targetIndex`. */
+  public startTransition(targetIndex: number, time: number, options: TransitionOptions): void {
     if (targetIndex < 0 || targetIndex >= this.fields.length) {
       throw new Error(`FieldLayoutEngine: targetIndex ${targetIndex} out of bounds`);
     }
-    if (targetIndex === this.currentIndex) {
-      this.morphing = false;
-      this.morphProgress = 0;
-      this.nextIndex = targetIndex;
-      return;
+    const count = options.from.length;
+    const delays = options.front.delays(options.from);
+    let slots: Int32Array;
+    if (options.assignSlots) {
+      const order = new Int32Array(count).map((_, index) => index).sort((a, b) => delays[a] - delays[b]);
+      slots = assignSlots(options.from, this.sampleField(targetIndex, count, time), order);
+    } else {
+      slots = new Int32Array(count).map((_, index) => index);
     }
-    this.nextIndex = targetIndex;
-    this.morphElapsed = 0;
-    this.morphDuration = Math.max(0.1, durationSeconds);
-    this.morphProgress = 0;
-    this.morphing = true;
+    this.transition = new FieldTransition(targetIndex, options.from, slots, delays, options.travelSeconds);
+  }
+
+  /** Cross-fade into `targetIndex` from the current samples, all elements at once, keeping their index. */
+  public startMorphTo(targetIndex: number, durationSeconds: number = DEFAULT_DURATION): void {
+    if (targetIndex === this.currentIndex && !this.transition) return;
+    const from = this.samples.map((sample) => sample.clone());
+    this.startTransition(targetIndex, 0, {
+      from,
+      front: new ImmediateFront(),
+      assignSlots: false,
+      travelSeconds: Math.max(0.1, durationSeconds),
+    });
   }
 
   public update(deltaSeconds: number): void {
-    if (!this.morphing) {
-      return;
-    }
-    this.morphElapsed += deltaSeconds;
-    this.morphProgress = Math.min(1, this.morphElapsed / this.morphDuration);
-    if (this.morphProgress >= 1) {
-      this.currentIndex = this.nextIndex;
-      this.morphing = false;
-      this.morphProgress = 0;
+    if (!this.transition) return;
+    this.transition.advance(deltaSeconds);
+    if (this.transition.done) {
+      this.currentIndex = this.transition.targetIndex;
+      this.slotOf = this.transition.slots;
+      this.transition = null;
     }
   }
 
   public isMorphing(): boolean {
-    return this.morphing;
+    return this.transition !== null;
   }
 
   public getMorphProgress(): number {
-    return this.morphProgress;
+    return this.transition?.progress ?? 0;
   }
 
   public getCurrentFieldIndex(): number {
@@ -124,30 +161,30 @@ export class FieldLayoutEngine {
   }
 
   public resetMorph(): void {
-    this.morphing = false;
-    this.morphProgress = 0;
-    this.morphElapsed = 0;
-    this.nextIndex = this.currentIndex;
+    this.transition = null;
   }
 
   public sampleAll(total: number, time: number): Vector3[] {
     if (this.samples.length !== total) {
       this.samples = Array.from({ length: total }, () => new Vector3(0, 0, 0));
     }
+    if (this.slotOf.length !== total) {
+      // A rebuilt field starts in index order.
+      this.slotOf = new Int32Array(total).map((_, index) => index);
+    }
     this.context.totalCount = total;
-    const currentField = this.getCurrentField();
-    const nextField = this.getNextField();
+    const transition = this.transition;
+    const field = this.getCurrentField();
+    const target = transition ? this.fields[transition.targetIndex] : null;
 
     for (let index = 0; index < total; index += 1) {
-      currentField.sample(index, time, this.context, this.currentScratch);
-      if (this.morphing) {
-        nextField.sample(index, time, this.context, this.nextScratch);
-        Vector3.LerpToRef(this.currentScratch, this.nextScratch, this.morphProgress, this.samples[index]);
+      if (transition && target) {
+        target.sample(transition.slots[index] ?? index, time, this.context, this.targetScratch);
+        transition.sampleToRef(index, this.targetScratch, this.samples[index]);
       } else {
-        this.samples[index].copyFrom(this.currentScratch);
+        field.sample(this.slotOf[index] ?? index, time, this.context, this.samples[index]);
       }
     }
     return this.samples;
   }
 }
-

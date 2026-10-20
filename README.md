@@ -29,6 +29,7 @@ The eventcrawler project is `VITE_EVENTCRAWLER_PROJECT_SLUG` (default `default` 
 
 - **Thin instances:** cubes and image tiles are drawn by one thin-instanced box with a 4096 px texture atlas (`src/engine/instancing/CubeInstanceRenderer.ts`). The per-cell meshes remain as invisible proxies (layer mask 0) for layouts, animation, physics and picking; the selected cube is drawn by its own mesh with a 1024 px texture. Glass caption tiles keep their own mesh (left out in AR).
 - **Physics** (`src/engine/physics/FieldPhysics.ts`, F3 cycles off → drop → anchor → off): Havok bodies live in field space (the field root's parent space), on their own nodes; meshes follow the bodies after each step. In anchor mode a morph (F7) steers the cubes into the new form by velocity.
+- **Shape changes** (F7, F10 cycles the front): an activation front (sphere / plane from the viewer, or off) releases the cubes one after another; in free-form shapes they claim the nearest free slot. See `docs/architecture.md`.
 - **AR** (`src/engine/xr/`): "In AR ansehen" appears in browsers with `immersive-ar` (Meta Quest). The field is re-parented under a scaled anchor in front of the viewer. Grip, or trigger/pinch past the cubes, moves it; two hands scale and turn it; trigger/pinch on a cube selects it. Menu: palm-up of the left hand (hand tracking) or X/Y on the left controller; operated by ray + pinch/trigger or an index-finger poke. Layout follows the CloudV2 AR hand menu (content post #5509). Keyboard shortcuts and menu share one action handler in `App.tsx`.
 
 ## Architecture
