@@ -1,5 +1,6 @@
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { ActivationFrontMode } from '../engine/transition/ActivationFront';
+import { STRESS_GRID_SIZE, stressCameraRadius } from './stressTest';
 
 export type BackgroundType = 'solid' | 'gradient';
 export type DepthOfFieldBlurLevel = 'low' | 'medium' | 'high';
@@ -191,7 +192,7 @@ export interface CubeWallConfig {
 }
 
 export const appConfig: CubeWallConfig = {
-  maxGridSize: 35,
+  maxGridSize: Math.max(35, STRESS_GRID_SIZE ?? 0),
   gridSize: 25,
   cubeSize: 1.0,
   cubeSpacing: 0.15,
@@ -248,7 +249,7 @@ export const appConfig: CubeWallConfig = {
   camera: {
     radius: 75,
     minRadius: 2,
-    maxRadius: 300,
+    maxRadius: Math.max(300, STRESS_GRID_SIZE === null ? 0 : stressCameraRadius(75, STRESS_GRID_SIZE)),
     wheelPrecision: 10,
     panningSensibility: 1500,
     lerpSpeedFactor: 0.07,

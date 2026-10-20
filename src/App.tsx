@@ -24,6 +24,7 @@ import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
 import type { ArMenuAction, ArMenuState, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
 import { mapUvLayout } from './config/applySettingsToConfig';
+import { STRESS_GRID_SIZE, stressCameraRadius } from './config/stressTest';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -267,8 +268,19 @@ export default function App() {
     let disposed = false;
     (async () => {
       console.info('[CubeWallInit] Loading initial presenter settings …');
-      const { settings: initial, fromServer } = await loadInitialSettingsAsync();
+      const { settings: loaded, fromServer } = await loadInitialSettingsAsync();
       if (disposed) return;
+      const initial =
+        STRESS_GRID_SIZE === null
+          ? loaded
+          : {
+              ...loaded,
+              // Overview of the whole field: no fly-to on selections.
+              gridSize: STRESS_GRID_SIZE,
+              cameraRadius: stressCameraRadius(appConfig.camera.radius, STRESS_GRID_SIZE),
+              selectionCameraFollowEnabled: false,
+              autoSelectEnabled: false,
+            };
       initialSourceRef.current = fromServer ? 'server' : 'cookie';
       setSettings(initial);
       console.info('[CubeWallInit] Initial settings ready.', { fromServer });
@@ -299,7 +311,8 @@ export default function App() {
       };
 
       await presenter.setContent(items, {
-        repeatContent: provider === 'default',
+        // A `?cubes=` load test repeats the items so every cube carries an image.
+        repeatContent: provider === 'default' || STRESS_GRID_SIZE !== null,
         useFallbackTextures: enableBaseFallbackTextures && provider === 'default',
         useDynamicFallbacks: enableBaseFallbackTextures && provider === 'default' && enablePicsumFallbacks,
         sidePattern,
@@ -633,7 +646,8 @@ export default function App() {
 
   useEffect(() => {
     if (!settings) return;
-    setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
+    // A `?cubes=` load test keeps its oversized grid out of the cookie too.
+    if (STRESS_GRID_SIZE === null) setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
     // Only write back when the session started from the server's settings; a
     // session that fell back to cookie/defaults must not overwrite the shared store.
     const shouldPersist = hasPersistedRef.current && initialSourceRef.current === 'server';
