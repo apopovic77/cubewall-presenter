@@ -37,7 +37,7 @@ See [`docs/architecture.md`](docs/architecture.md) (class diagram, folder respon
 
 ## Regression check
 
-Behaviour-preserving changes are verified with a headless run against `vite preview` with `?debug` (exposes the presenter as `window.__cubewall`): load, click and next-cube selection, morph without physics, physics drop / anchor with morph, wave toggle, axis layout, masonry tiles and back to cubes, textures loaded. Run it with `npm run build && npx vite preview --port 4179 &` and `npm run regression` (`tools/regression.mjs`, Chrome path via `CHROME_PATH`). It uses the real GPU (`--use-angle=metal`); the software GPU renders a few frames per second and stretches every time-based step.
+Behaviour-preserving changes are verified with a headless run against `vite preview` with `?debug` (exposes the presenter as `window.__cubewall`; a `?debug` session never writes the shared settings store): load, click and next-cube selection, morph without physics, physics drop / anchor with morph, wave toggle, axis layout, masonry tiles and back to cubes, textures loaded. Run it with `npm run build && npx vite preview --port 4179 &` and `npm run regression` (`tools/regression.mjs`, Chrome path via `CHROME_PATH`). It uses the real GPU (`--use-angle=metal`); the software GPU renders a few frames per second and stretches every time-based step.
 
 ## Development
 

@@ -14,7 +14,10 @@ function resolveSettingsEndpoint(): string {
  * Dev sessions must not overwrite the kiosks' production settings unless a
  * settings endpoint was configured explicitly (e.g. a local settings server).
  */
-const CAN_WRITE_SETTINGS = !import.meta.env.DEV || Boolean(import.meta.env.VITE_SETTINGS_API_URL);
+const IS_DEBUG_SESSION = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
+/** `?debug` sessions (automated regression runs, inspection) never write the shared store either. */
+const CAN_WRITE_SETTINGS =
+  !IS_DEBUG_SESSION && (!import.meta.env.DEV || Boolean(import.meta.env.VITE_SETTINGS_API_URL));
 
 const SAVE_DEBOUNCE_MS = 800;
 const SETTINGS_TOKEN_STORAGE_KEY = 'cwSettingsToken';
