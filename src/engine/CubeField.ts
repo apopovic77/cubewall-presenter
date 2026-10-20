@@ -3,14 +3,10 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
-import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
-import { Vector3, Quaternion, Vector4, Matrix } from '@babylonjs/core/Maths/math.vector';
+import { Vector3, Quaternion, Matrix } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
-import type { FloatArray } from '@babylonjs/core/types';
 import { TileMaterialManager } from './tiles/TileMaterialManager';
 import '@babylonjs/core/Shaders/default.fragment';
 import '@babylonjs/core/Shaders/default.vertex';
@@ -36,11 +32,10 @@ import { MasonryField } from './layouts/fields/MasonryField';
 import { CubeInstanceRenderer } from './instancing/CubeInstanceRenderer';
 import { FieldPhysics, type FieldPhysicsMode } from './physics/FieldPhysics';
 import { ContentAssigner, type AxisValueInfo } from './content/ContentAssigner';
+import { CubeTextureLoader, type CubeTextureHost } from './cubes/CubeTextureLoader';
+import { FallbackImageSource } from './cubes/FallbackImageSource';
+import { buildTileFaceUVs, computeFaceUVs } from './cubes/CubeFaceUvs';
 
-/** Pixel width requested from storage for cube face textures (atlas cells are ~160 px). */
-const CUBE_TEXTURE_WIDTH_PX = 320;
-/** Pixel width of the texture loaded for the selected cube, which is seen up close. */
-const DETAIL_TEXTURE_WIDTH_PX = 1024;
 
 export interface CubeSelectionInfo {
   readonly gridX: number;
@@ -101,11 +96,6 @@ export class CubeField {
   private readonly instanceRenderer: CubeInstanceRenderer;
   private cubes: CubeCell[] = [];
   private selection: CubeCell | null = null;
-  private dynamicImageUrls: string[] = [];
-  private picsumErrorCount = 0;
-  private allowFallbackTextures = false;
-  private useDynamicFallbacks = false;
-  private useSafeFallbackTextures = false;
   private contentItems: CubeContentItem[] = [];
   /** Rigid-body simulation (drop / anchor modes); runs in field space, see FieldPhysics. */
   private readonly physics: FieldPhysics;
@@ -120,7 +110,6 @@ export class CubeField {
   private fieldAutoRotateAxis = new Vector3(0, 1, 0);
   private contentOptions: CubeContentOptions;
   private readonly contentAssigner = new ContentAssigner();
-  private readonly outstandingAspectAdjustments = new Map<number, { cell: CubeCell; texture: Texture }>();
   private readonly fieldEngine: FieldLayoutEngine;
   private fieldTime = 0;
   private readonly fieldMorphDurationSeconds = 6;
@@ -130,6 +119,8 @@ export class CubeField {
   private stackingAnchors = new Map<string, { x: number; z: number }>();
   private layoutDirty = false;
   private readonly tileMaterialManager: TileMaterialManager;
+  private readonly fallback: FallbackImageSource;
+  private readonly textures: CubeTextureLoader;
   private readonly orientationScratch = Vector3.Zero();
   private readonly orientationQuatScratchA = Quaternion.Identity();
   private readonly orientationQuatScratchB = Quaternion.Identity();
@@ -261,6 +252,7 @@ export class CubeField {
   constructor(scene: Scene, config: CubeWallConfig = appConfig) {
     this.scene = scene;
     this.config = config;
+    this.fallback = new FallbackImageSource(config);
     this.root = new TransformNode('cubeFieldRoot', this.scene);
     this.root.rotationQuaternion = Quaternion.Identity();
     this.root.position.set(0, 0, 0);
@@ -268,7 +260,7 @@ export class CubeField {
     this.instanceRenderer = new CubeInstanceRenderer(
       scene,
       config.cubeSize,
-      this.computeFaceUVs(config.textureSidePattern, config.textureMirrorTopBottom),
+      computeFaceUVs(config.textureSidePattern, config.textureMirrorTopBottom),
     );
     const initialLayout: CubeLayoutConfig = { ...config.layout };
     this.contentOptions = {
@@ -280,9 +272,7 @@ export class CubeField {
       uvLayout: config.textureUvLayout,
       layout: initialLayout,
     };
-    this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
-    this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
-    this.useSafeFallbackTextures = this.contentOptions.useFallbackTextures;
+    this.fallback.initialize(this.contentOptions.useFallbackTextures, this.contentOptions.useDynamicFallbacks);
     this.fieldEngine = new FieldLayoutEngine([
       new GridWaveField(),
       new LineWaveField(),
@@ -295,6 +285,14 @@ export class CubeField {
     this.fieldTime = 0;
     this.glassTileFactory = new GlassTileFactory(scene);
     this.tileMaterialManager = new TileMaterialManager(scene);
+    this.textures = new CubeTextureLoader({
+      scene,
+      config,
+      instanceRenderer: this.instanceRenderer,
+      tileMaterialManager: this.tileMaterialManager,
+      fallback: this.fallback,
+      host: this.createTextureHost(),
+    });
     this.updateRootTransform();
     this.rebuild(config.gridSize, this.tileDescriptors.length || undefined);
   }
@@ -462,16 +460,12 @@ export class CubeField {
     this.disposeCubes();
     this.updateRootTransform();
     this.config.gridSize = gridSize;
-    this.useSafeFallbackTextures = this.config.useFallbackImages;
-    if (this.useSafeFallbackTextures) {
-      this.picsumErrorCount = 0;
-    }
     const total = tileCount ?? gridSize * gridSize;
     const spacing = this.config.cubeSize + this.config.cubeSpacing;
     const columns = Math.max(1, gridSize);
     const offset = -((columns - 1) * spacing) / 2;
 
-    this.generateDynamicImageUrls(total);
+    this.fallback.resetForRebuild(total);
 
     for (let index = 0; index < total; index += 1) {
       const gridX = index % columns;
@@ -544,10 +538,10 @@ export class CubeField {
 
         this.cubes.push(cube);
 
-      if (this.allowFallbackTextures) {
-        const textureUrl = this.pickTextureUrl(index);
+      if (this.fallback.enabled) {
+        const textureUrl = this.fallback.pickUrl(index);
         if (textureUrl) {
-          this.loadTextureForCell(cube, textureUrl);
+          this.textures.loadTextureForCell(cube, textureUrl);
         }
       }
     }
@@ -567,7 +561,7 @@ export class CubeField {
     const tileMode = this.config.geometryMode === 'tile';
     this.instanceRenderer.setGeometry(
       this.config.cubeSize,
-      tileMode ? this.buildTileFaceUVs() : this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom),
+      tileMode ? buildTileFaceUVs() : computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom),
     );
     this.instanceRenderer.setCubes(this.cubes, { cropToSquare: !tileMode });
     this.instancingMode = this.config.geometryMode;
@@ -586,7 +580,7 @@ export class CubeField {
     });
     this.cubes = [];
     this.selection = null;
-    this.outstandingAspectAdjustments.clear();
+    this.textures.cancelPendingAspectAdjustments();
   }
   public dispose(): void {
     this.physics.dispose();
@@ -613,13 +607,11 @@ export class CubeField {
       layout,
     };
     this.config.layout = { ...layout };
-    this.allowFallbackTextures = this.contentOptions.useFallbackTextures;
-    this.useDynamicFallbacks = this.contentOptions.useDynamicFallbacks;
-    if (!this.allowFallbackTextures || !this.useDynamicFallbacks) {
-      this.dynamicImageUrls = [];
-    } else if (!this.useSafeFallbackTextures) {
-      this.generateDynamicImageUrls(this.config.gridSize * this.config.gridSize);
-    }
+    this.fallback.configure(
+      this.contentOptions.useFallbackTextures,
+      this.contentOptions.useDynamicFallbacks,
+      this.config.gridSize * this.config.gridSize,
+    );
     console.info('[CubeField] setContent', {
       items: items.length,
       withImage: items.filter((item) => !!item.imageUrl).length,
@@ -659,7 +651,7 @@ export class CubeField {
       }
     }
     this.applyContentToCubes();
-    this.refreshTextureMappings();
+    this.textures.refreshTextureMappings();
   }
 
   /** False if a newer setContent started meanwhile (its result is discarded). */
@@ -798,146 +790,28 @@ export class CubeField {
     return cube.tileDescriptor?.kind !== 'glassText';
   }
 
-  private generateDynamicImageUrls(count: number): void {
-    if (!this.allowFallbackTextures || !this.useDynamicFallbacks || this.useSafeFallbackTextures) {
-      this.dynamicImageUrls = [];
-      return;
-    }
-    this.dynamicImageUrls = [];
-    const timestamp = Date.now();
-    for (let i = 0; i < count; i += 1) {
-      const seed = Math.floor(Math.random() * 20000) + i;
-      this.dynamicImageUrls.push(`https://picsum.photos/256/256?random=${seed}&t=${timestamp + i}`);
-    }
-  }
-
-  private pickTextureUrl(index: number): string {
-    if (!this.allowFallbackTextures) {
-      return '';
-    }
-    if (this.useDynamicFallbacks && !this.useSafeFallbackTextures && this.dynamicImageUrls.length > 0) {
-      return this.dynamicImageUrls[index % this.dynamicImageUrls.length];
-    }
-    const safe = this.config.fallbackTextureUrlsSafe.length > 0 ? this.config.fallbackTextureUrlsSafe : this.config.fallbackTextureUrls;
-    if (safe.length === 0) {
-      return '';
-    }
-    return safe[index % safe.length];
+  private createTextureHost(): CubeTextureHost {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const field = this;
+    return {
+      get contentOptions() {
+        return field.contentOptions;
+      },
+      get selection() {
+        return field.selection;
+      },
+      get cells() {
+        return field.cubes;
+      },
+      isInstanced: (cell) => this.isInstanced(cell),
+      applyGeometryToCell: (cell, aspect) => this.applyGeometryToCell(cell, aspect),
+      applyTileAspect: (cell, aspect) => this.applyTileAspect(cell, aspect),
+    };
   }
 
   /** Cubes and image tiles are instanced; glass text tiles keep their own mesh. */
   private isInstanced(cell: CubeCell): boolean {
     return cell.tileDescriptor?.kind !== 'glassText';
-  }
-
-  private loadTextureForCell(cell: CubeCell, url: string): void {
-    url = this.normalizeTextureUrl(url);
-    if (!url) {
-      this.clearTextureForCell(cell);
-      return;
-    }
-
-    if (cell.textureUrl === url && cell.textureLoaded) {
-      return;
-    }
-
-    if (this.isInstanced(cell)) {
-      this.loadAtlasImageForCell(cell, url);
-      return;
-    }
-
-    cell.textureLoaded = false;
-    cell.textureUrl = url;
-    const material = cell.material;
-    const texture = new Texture(
-      url,
-      this.scene,
-      undefined,
-      true,
-      Texture.TRILINEAR_SAMPLINGMODE,
-      () => {
-        material.diffuseTexture = texture;
-        // The per-cube tint is only for untextured cubes; multiplied with a
-        // photo it casts it dark magenta/rose.
-        material.diffuseColor = Color3.White();
-        material.emissiveTexture = null;
-        material.emissiveColor = Color3.Black();
-        cell.textureLoaded = true;
-        texture.wrapU = Texture.CLAMP_ADDRESSMODE;
-        texture.wrapV = Texture.CLAMP_ADDRESSMODE;
-        this.configureTextureForCell(cell, texture);
-        cell.textureSidePattern = this.contentOptions.sidePattern;
-        cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
-        const aspect = this.computeAspectRatio(texture);
-        cell.textureAspectRatio = Number.isFinite(aspect) ? aspect : null;
-        this.applyGeometryToCell(cell, cell.textureAspectRatio);
-        if (cell.tileDescriptor) {
-          this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
-        } else {
-          this.tileMaterialManager.restoreCubeMaterials(cell);
-        }
-        this.scheduleAspectAdjustment(cell, texture);
-        this.picsumErrorCount = 0;
-        console.debug('[CubeField] texture loaded', {
-          grid: { x: cell.gridX, z: cell.gridZ },
-          url,
-          size: texture.getSize(),
-        });
-      },
-      () => {
-        texture.dispose();
-        cell.textureLoaded = false;
-        console.warn('[CubeField] texture failed', {
-          grid: { x: cell.gridX, z: cell.gridZ },
-          url,
-        });
-        if (url.includes('picsum.photos')) {
-          this.picsumErrorCount += 1;
-          if (this.picsumErrorCount >= this.config.picsumErrorThreshold) {
-            this.useSafeFallbackTextures = true;
-            this.config.useFallbackImages = true;
-            this.dynamicImageUrls = [];
-          }
-        }
-        if (!this.allowFallbackTextures) {
-          this.clearTextureForCell(cell);
-          return;
-        }
-        const fallbackUrl = this.pickTextureUrl(cell.gridX * this.config.gridSize + cell.gridZ);
-        if (fallbackUrl && fallbackUrl !== url) {
-          this.loadTextureForCell(cell, fallbackUrl);
-        } else {
-          this.clearTextureForCell(cell);
-        }
-      },
-    );
-  }
-
-  /** Instanced cubes: the image goes into the shared atlas instead of a texture of its own. */
-  private loadAtlasImageForCell(cell: CubeCell, url: string): void {
-    cell.textureLoaded = false;
-    cell.textureUrl = url;
-    this.instanceRenderer.setImage(
-      cell,
-      url,
-      (aspect) => {
-        cell.textureLoaded = true;
-        cell.textureAspectRatio = Number.isFinite(aspect) ? aspect : null;
-        if (cell.tileDescriptor?.kind === 'image' && cell.textureAspectRatio) this.applyTileAspect(cell, cell.textureAspectRatio);
-        if (cell === this.selection) this.loadDetailTexture(cell);
-      },
-      () => {
-        console.warn('[CubeField] atlas image failed', { grid: { x: cell.gridX, z: cell.gridZ }, url });
-        const fallbackUrl = this.allowFallbackTextures
-          ? this.pickTextureUrl(cell.gridX * this.config.gridSize + cell.gridZ)
-          : '';
-        if (fallbackUrl && this.normalizeTextureUrl(fallbackUrl) !== url) {
-          this.loadTextureForCell(cell, fallbackUrl);
-        } else {
-          this.clearTextureForCell(cell);
-        }
-      },
-    );
   }
 
   /** Image tile: height from the image's aspect ratio, and the layout re-flows (masonry). */
@@ -951,126 +825,6 @@ export class CubeField {
     if (index >= 0) this.tileFootprints[index] = { ...descriptor.footprint };
     this.applyGeometryToCell(cell, aspect);
     this.layoutDirty = true;
-  }
-
-  /**
-   * The selected cube is drawn by its own mesh with a high-resolution texture
-   * (atlas cells are small); it switches over once that texture has loaded.
-   */
-  private loadDetailTexture(cell: CubeCell): void {
-    if (!cell.textureUrl) {
-      this.instanceRenderer.setDetached(cell, true);
-      return;
-    }
-    const detailUrl = this.withTextureWidth(cell.textureUrl, DETAIL_TEXTURE_WIDTH_PX);
-    const material = cell.material;
-    const texture = new Texture(detailUrl, this.scene, undefined, true, Texture.TRILINEAR_SAMPLINGMODE, () => {
-      if (this.selection !== cell) {
-        texture.dispose();
-        return;
-      }
-      material.diffuseTexture?.dispose();
-      material.diffuseTexture = texture;
-      material.diffuseColor = Color3.White();
-      this.configureTextureForCell(cell, texture);
-      this.applyAspectCrop(cell, texture);
-      this.instanceRenderer.setDetached(cell, true);
-    }, () => {
-      texture.dispose();
-      if (this.selection === cell) this.instanceRenderer.setDetached(cell, true);
-    });
-  }
-
-  private releaseDetailTexture(cell: CubeCell): void {
-    this.instanceRenderer.setDetached(cell, false);
-    const material = cell.material;
-    material.diffuseTexture?.dispose();
-    material.diffuseTexture = null;
-    material.diffuseColor = cell.tintColor.scale(0.4);
-  }
-
-  private refreshTextureMappings(): void {
-    this.cubes.forEach((cell) => {
-      const texture = cell.material.diffuseTexture;
-      if (texture instanceof Texture && cell.textureLoaded) {
-        if (texture.isReady()) {
-          this.configureTextureForCell(cell, texture);
-          this.applyGeometryToCell(cell, cell.textureAspectRatio);
-          if (cell.tileDescriptor) {
-            this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
-          } else {
-            this.tileMaterialManager.restoreCubeMaterials(cell);
-          }
-          this.scheduleAspectAdjustment(cell, texture);
-        } else {
-          texture.onLoadObservable.addOnce(() => {
-            this.configureTextureForCell(cell, texture);
-            this.applyGeometryToCell(cell, cell.textureAspectRatio);
-            if (cell.tileDescriptor) {
-              this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
-            } else {
-              this.tileMaterialManager.restoreCubeMaterials(cell);
-            }
-            this.scheduleAspectAdjustment(cell, texture);
-          });
-        }
-      }
-    });
-  }
-
-  private configureTextureForCell(cell: CubeCell, texture: Texture): void {
-    if (!texture.isReady()) {
-      return;
-    }
-    texture.wrapU = Texture.CLAMP_ADDRESSMODE;
-    texture.wrapV = Texture.CLAMP_ADDRESSMODE;
-    const size = texture.getSize();
-    const aspect = size.width > 0 && size.height > 0 ? size.width / size.height : 1;
-    cell.textureAspectRatio = aspect;
-    cell.textureSidePattern = this.contentOptions.sidePattern;
-    cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
-    cell.textureUvLayout = this.contentOptions.uvLayout;
-    const faceUVs =
-      this.config.geometryMode === 'tile'
-        ? this.buildTileFaceUVs()
-        : this.computeFaceUVs(this.contentOptions.sidePattern, this.contentOptions.mirrorTopBottom);
-    const vertexData = VertexData.CreateBox({
-      size: this.config.cubeSize,
-      sideOrientation: Mesh.FRONTSIDE,
-      faceUV: faceUVs,
-    });
-    if (vertexData.uvs) {
-      cell.mesh.updateVerticesData(VertexBuffer.UVKind, vertexData.uvs, false, true);
-    }
-  }
-
-  private computeFaceUVs(sidePattern: TextureSidePattern, mirrorTopBottom: boolean): Vector4[] {
-    const make = (flipU: boolean, flipV: boolean) => (
-      flipU && flipV ? new Vector4(1, 1, 0, 0)
-        : flipU ? new Vector4(1, 0, 0, 1)
-        : flipV ? new Vector4(0, 1, 1, 0)
-        : new Vector4(0, 0, 1, 1)
-    );
-
-    const sideFlips = sidePattern === 'alternating'
-      ? [false, true, false, true]
-      : [false, false, false, false];
-
-    return [
-      make(sideFlips[0], false), // front
-      make(sideFlips[2], false), // back
-      make(sideFlips[1], false), // right
-      make(sideFlips[3], false), // left
-      make(false, false), // top
-      make(false, mirrorTopBottom), // bottom
-    ];
-  }
-
-  private buildTileFaceUVs(): Vector4[] {
-    const front = new Vector4(0, 0, 1, 1);
-    const back = new Vector4(1, 0, 0, 1); // mirror horizontal to keep orientation
-    const blank = new Vector4(0.5, 0.5, 0.5, 0.5);
-    return [front, back, blank, blank, blank, blank];
   }
 
   public updateTextureUvLayout(options: { layout: TextureUvLayout; sidePattern: TextureSidePattern; mirrorTopBottom: boolean }): void {
@@ -1093,221 +847,8 @@ export class CubeField {
       cube.textureSidePattern = sidePattern;
       cube.textureMirrorTopBottom = mirrorTopBottom;
     });
-    this.instanceRenderer.setGeometry(this.config.cubeSize, this.computeFaceUVs(sidePattern, mirrorTopBottom));
-    this.refreshTextureMappings();
-  }
-
-  private scheduleAspectAdjustment(cell: CubeCell, texture: Texture): void {
-    const aspect = this.computeAspectRatio(texture);
-    if (!Number.isFinite(aspect) || aspect <= 0) {
-      this.outstandingAspectAdjustments.set(cell.mesh.uniqueId, { cell, texture });
-      texture.onLoadObservable.addOnce(() => {
-        const entry = this.outstandingAspectAdjustments.get(cell.mesh.uniqueId);
-        if (!entry) return;
-        this.outstandingAspectAdjustments.delete(cell.mesh.uniqueId);
-        this.applyAspectCrop(entry.cell, entry.texture);
-      });
-      return;
-    }
-
-    cell.textureAspectRatio = aspect;
-    if (cell.tileDescriptor?.kind === 'image') {
-      const width = cell.tileDescriptor.footprint.width;
-      const height = width / aspect;
-      cell.tileDescriptor.footprint.height = height;
-      cell.footprint.height = height;
-      const index = this.cubes.indexOf(cell);
-      if (index >= 0) {
-        this.tileFootprints[index] = { ...cell.tileDescriptor.footprint };
-      }
-      this.layoutDirty = true;
-    }
-    this.applyAspectCrop(cell, texture);
-  }
-
-  private computeAspectRatio(texture: Texture): number {
-    const internal = texture.getInternalTexture();
-    const width = internal?.width ?? texture.getSize().width;
-    const height = internal?.height ?? texture.getSize().height;
-    if (!width || !height) {
-      return Number.NaN;
-    }
-    return width / height;
-  }
-
-  private applyUniformSideUvLayout(cell: CubeCell, uvArray: FloatArray): void {
-    if (cell.textureUvLayout !== 'uniformSides') {
-      return;
-    }
-    const positions = cell.mesh.getVerticesData(VertexBuffer.PositionKind);
-    if (!positions || positions.length === 0) {
-      return;
-    }
-    const faces = this.getFaceVertexIndexMap();
-    const facesToNormalize = [faces.front, faces.right, faces.back, faces.left];
-    const worldUp = Vector3.UpReadOnly;
-
-    facesToNormalize.forEach((indices) => {
-      const points = indices.map((vertexIndex) => {
-        const base = vertexIndex * 3;
-        return new Vector3(positions[base], positions[base + 1], positions[base + 2]);
-      });
-
-      const center = points.reduce((acc, point) => acc.addInPlace(point), Vector3.Zero()).scaleInPlace(1 / points.length);
-      const edge1 = points[1].subtract(points[0]);
-      const edge2 = points[3].subtract(points[0]);
-      const normal = Vector3.Cross(edge1, edge2).normalize();
-      let uAxis = Vector3.Cross(worldUp, normal);
-      if (uAxis.lengthSquared() < 1e-6) {
-        uAxis = Vector3.Cross(Vector3.Forward(), normal);
-        if (uAxis.lengthSquared() < 1e-6) {
-          uAxis = Vector3.Cross(Vector3.Right(), normal);
-        }
-      }
-      uAxis.normalize();
-      const vAxis = Vector3.Cross(normal, uAxis).normalize();
-
-      let minU = Infinity;
-      let maxU = -Infinity;
-      let minV = Infinity;
-      let maxV = -Infinity;
-      const projections = points.map((point) => {
-        const offset = point.subtract(center);
-        const u = Vector3.Dot(offset, uAxis);
-        const v = Vector3.Dot(offset, vAxis);
-        if (u < minU) minU = u;
-        if (u > maxU) maxU = u;
-        if (v < minV) minV = v;
-        if (v > maxV) maxV = v;
-        return { u, v };
-      });
-
-      const rangeU = maxU - minU;
-      const rangeV = maxV - minV;
-      if (rangeU < 1e-6 || rangeV < 1e-6) {
-        return;
-      }
-
-      projections.forEach(({ u, v }, idx) => {
-        const uvIndex = indices[idx] * 2;
-        uvArray[uvIndex] = (u - minU) / rangeU;
-        uvArray[uvIndex + 1] = (v - minV) / rangeV;
-      });
-    });
-  }
-
-  private applyAspectCrop(cell: CubeCell, texture: Texture): void {
-    if (this.config.geometryMode === 'tile') {
-      return;
-    }
-    const aspect = cell.textureAspectRatio ?? this.computeAspectRatio(texture);
-    if (!Number.isFinite(aspect) || aspect <= 0) {
-      return;
-    }
-
-    const uvData = cell.mesh.getVerticesData(VertexBuffer.UVKind);
-    if (!uvData) {
-      return;
-    }
-
-    const faces = this.getFaceVertexIndexMap();
-    this.applyUniformSideUvLayout(cell, uvData);
-
-    const sidePattern = cell.textureSidePattern ?? this.contentOptions.sidePattern;
-    const mirrorTopBottom = cell.textureMirrorTopBottom ?? this.contentOptions.mirrorTopBottom;
-    const sideFlips = sidePattern === 'alternating'
-      ? [false, true, false, true]
-      : [false, false, false, false];
-
-    this.adjustFaceUVs(uvData, faces.front, aspect, sideFlips[0], false);
-    this.adjustFaceUVs(uvData, faces.back, aspect, sideFlips[2], false);
-    this.adjustFaceUVs(uvData, faces.right, aspect, sideFlips[1], false);
-    this.adjustFaceUVs(uvData, faces.left, aspect, sideFlips[3], false);
-    this.adjustFaceUVs(uvData, faces.top, aspect, false, false);
-    this.adjustFaceUVs(uvData, faces.bottom, aspect, false, mirrorTopBottom);
-
-    cell.mesh.setVerticesData(VertexBuffer.UVKind, uvData, true);
-  }
-
-  private adjustFaceUVs(uvArray: FloatArray, vertexIndices: number[], aspect: number, mirrorHorizontal: boolean, mirrorVertical: boolean): void {
-    const horizontalScale = aspect > 1 ? 1 / aspect : 1;
-    const verticalScale = aspect < 1 ? aspect : 1;
-    const horizontalOffset = (1 - horizontalScale) / 2;
-    const verticalOffset = (1 - verticalScale) / 2;
-
-    vertexIndices.forEach((vertex) => {
-      const idx = vertex * 2;
-      let u = uvArray[idx];
-      let v = uvArray[idx + 1];
-
-      if (mirrorHorizontal) {
-        u = 1 - u;
-      }
-      if (mirrorVertical) {
-        v = 1 - v;
-      }
-
-      u = horizontalOffset + u * horizontalScale;
-      v = verticalOffset + v * verticalScale;
-
-      if (mirrorHorizontal) {
-        u = 1 - u;
-      }
-      if (mirrorVertical) {
-        v = 1 - v;
-      }
-
-      uvArray[idx] = Math.max(0, Math.min(1, u));
-      uvArray[idx + 1] = Math.max(0, Math.min(1, v));
-    });
-  }
-
-  private getFaceVertexIndexMap(): {
-    front: number[];
-    right: number[];
-    back: number[];
-    left: number[];
-    top: number[];
-    bottom: number[];
-  } {
-    return {
-      front: [0, 1, 2, 3],
-      right: [4, 5, 6, 7],
-      back: [8, 9, 10, 11],
-      left: [12, 13, 14, 15],
-      top: [16, 17, 18, 19],
-      bottom: [20, 21, 22, 23],
-    };
-  }
-
-  private withTextureWidth(url: string, width: number): string {
-    try {
-      const parsed = new URL(url);
-      parsed.searchParams.set('width', String(width));
-      return parsed.toString();
-    } catch {
-      return url;
-    }
-  }
-
-  private normalizeTextureUrl(url: string | null | undefined): string {
-    if (!url) {
-      return '';
-    }
-    try {
-      // A cube face is a few hundred pixels at most; 600 px images cost ~4x the
-      // memory for 625 cubes, which a standalone headset cannot afford.
-      const parsed = new URL(this.withTextureWidth(url, CUBE_TEXTURE_WIDTH_PX));
-      if (!parsed.searchParams.has('quality')) {
-        parsed.searchParams.set('quality', '85');
-      }
-      if (!parsed.searchParams.has('format')) {
-        parsed.searchParams.set('format', 'jpg');
-      }
-      return parsed.toString();
-    } catch {
-      return url;
-    }
+    this.instanceRenderer.setGeometry(this.config.cubeSize, computeFaceUVs(sidePattern, mirrorTopBottom));
+    this.textures.refreshTextureMappings();
   }
 
   public getSelectionInfo(): CubeSelectionInfo | null {
@@ -1398,7 +939,7 @@ export class CubeField {
     }
     if (this.selection === cell) return;
     if (this.selection) {
-      if (this.isInstanced(this.selection)) this.releaseDetailTexture(this.selection);
+      if (this.isInstanced(this.selection)) this.textures.releaseDetailTexture(this.selection);
       this.selection.isSelected = false;
       this.selection.selectionProgress = Math.max(this.selection.selectionProgress, 0);
       this.selection = null;
@@ -1408,7 +949,7 @@ export class CubeField {
       this.selection.isSelected = true;
       this.selection.selectionProgress = 0;
       if (this.isInstanced(cell) && cell.textureLoaded) {
-        this.loadDetailTexture(cell);
+        this.textures.loadDetailTexture(cell);
       } else if (this.isInstanced(cell) && !cell.textureUrl) {
         this.instanceRenderer.setDetached(cell, true);
       }
@@ -1616,13 +1157,13 @@ export class CubeField {
         }
         cube.content = null;
         if (options.useFallbackTextures) {
-          const fallbackUrl = this.pickTextureUrl(index);
+          const fallbackUrl = this.fallback.pickUrl(index);
           if (fallbackUrl) {
-            this.loadTextureForCell(cube, fallbackUrl);
+            this.textures.loadTextureForCell(cube, fallbackUrl);
             return;
           }
         }
-        this.clearTextureForCell(cube);
+        this.textures.clearTextureForCell(cube);
       });
       return;
     }
@@ -1657,43 +1198,16 @@ export class CubeField {
 
       let textureUrl = item?.imageUrl ?? '';
       if (!textureUrl && options.useFallbackTextures) {
-        textureUrl = this.pickTextureUrl(index);
+        textureUrl = this.fallback.pickUrl(index);
       }
 
       if (textureUrl) {
-        this.loadTextureForCell(cube, textureUrl);
+        this.textures.loadTextureForCell(cube, textureUrl);
         return;
       }
 
-      this.clearTextureForCell(cube);
+      this.textures.clearTextureForCell(cube);
     });
-  }
-
-  private clearTextureForCell(cell: CubeCell): void {
-    if (this.isInstanced(cell)) this.instanceRenderer.clearImage(cell);
-    const material = cell.material;
-    if (material.diffuseTexture) {
-      material.diffuseTexture.dispose();
-      material.diffuseTexture = null;
-    }
-    if (material.emissiveTexture) {
-      material.emissiveTexture.dispose();
-      material.emissiveTexture = null;
-    }
-    material.emissiveColor = Color3.Black();
-    material.diffuseColor = cell.tintColor.scale(0.4);
-    cell.textureLoaded = false;
-    cell.textureUrl = '';
-    cell.textureAspectRatio = null;
-    cell.textureSidePattern = this.contentOptions.sidePattern;
-    cell.textureMirrorTopBottom = this.contentOptions.mirrorTopBottom;
-    cell.textureUvLayout = this.contentOptions.uvLayout;
-    this.applyGeometryToCell(cell, cell.textureAspectRatio);
-    if (cell.tileDescriptor) {
-      this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
-    } else {
-      this.tileMaterialManager.restoreCubeMaterials(cell);
-    }
   }
 
   /** Starts the rigid-body simulation; false if it was switched off again while Havok loaded. */
@@ -1703,7 +1217,7 @@ export class CubeField {
       return true;
     }
     this.selectCell(null);
-    this.outstandingAspectAdjustments.clear();
+    this.textures.cancelPendingAspectAdjustments();
     this.cubes.forEach((cube) => {
       cube.selectionProgress = 0;
       cube.physicsSpinAngle = 0;
@@ -1723,7 +1237,7 @@ export class CubeField {
     this.physics.disable();
     if (!wasActive) return;
     this.selectCell(null);
-    this.outstandingAspectAdjustments.clear();
+    this.textures.cancelPendingAspectAdjustments();
     this.cubes.forEach((cube) => {
       cube.isBeingDragged = false;
       cube.selectionProgress = 0;
