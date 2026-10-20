@@ -27,9 +27,17 @@ The eventcrawler project is `VITE_EVENTCRAWLER_PROJECT_SLUG` (default `default` 
 
 ## Rendering, physics, AR
 
-- **Thin instances:** in cube mode all cubes are drawn by one thin-instanced box with a 4096 px texture atlas (`src/engine/instancing/CubeInstanceRenderer.ts`). The per-cube meshes remain as invisible proxies (layer mask 0) for layouts, animation, physics and picking; the selected cube is drawn by its own mesh with a 1024 px texture. Tile mode renders per mesh.
+- **Thin instances:** cubes and image tiles are drawn by one thin-instanced box with a 4096 px texture atlas (`src/engine/instancing/CubeInstanceRenderer.ts`). The per-cell meshes remain as invisible proxies (layer mask 0) for layouts, animation, physics and picking; the selected cube is drawn by its own mesh with a 1024 px texture. Glass caption tiles keep their own mesh (left out in AR).
 - **Physics** (`src/engine/physics/FieldPhysics.ts`, F3 cycles off → drop → anchor → off): Havok bodies live in field space (the field root's parent space), on their own nodes; meshes follow the bodies after each step. In anchor mode a morph (F7) steers the cubes into the new form by velocity.
 - **AR** (`src/engine/xr/`): "In AR ansehen" appears in browsers with `immersive-ar` (Meta Quest). The field is re-parented under a scaled anchor in front of the viewer. Grip, or trigger/pinch past the cubes, moves it; two hands scale and turn it; trigger/pinch on a cube selects it. Menu: palm-up of the left hand (hand tracking) or X/Y on the left controller; operated by ray + pinch/trigger or an index-finger poke. Layout follows the CloudV2 AR hand menu (content post #5509). Keyboard shortcuts and menu share one action handler in `App.tsx`.
+
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) (class diagram, folder responsibilities, rules for changes).
+
+## Regression check
+
+Behaviour-preserving changes are verified with a headless run against `vite preview` with `?debug` (exposes the presenter as `window.__cubewall`): load, click and next-cube selection, morph without physics, physics drop / anchor with morph, wave toggle, axis layout, masonry tiles and back to cubes, textures loaded. Use Chrome with the real GPU (`--use-angle=metal`); the software GPU renders a few frames per second and stretches every time-based step.
 
 ## Development
 
