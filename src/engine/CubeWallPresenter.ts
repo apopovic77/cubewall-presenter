@@ -1,4 +1,3 @@
-import { PointerEventTypes, PointerInfo } from '@babylonjs/core/Events/pointerEvents';
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { SceneController } from './SceneController';
@@ -6,18 +5,18 @@ import { CubeField } from './CubeField';
 import type { CubeSelectionInfo } from './CubeField';
 import type { CubeCell } from './CubeField';
 import type { CubeContentOptions } from './CubeField';
-import { appConfig, DOF_WORLD_TO_MM } from '../config/AppConfig';
+import { appConfig } from '../config/AppConfig';
 import type { CubeWallConfig, AxisLabelAxis } from '../config/AppConfig';
 import type { PresenterSettings } from '../config/PresenterSettings';
-import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
 import { BillboardOverlay } from './BillboardOverlay';
 import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector';
-import { Plane } from '@babylonjs/core/Maths/math.plane';
 import type { CubeContentItem } from '../types/content';
 import { CameraOrbitController } from './CameraOrbitController';
 import { ArSessionController } from './xr/ArSessionController';
 import { BillboardConnector } from './presentation/BillboardConnector';
 import { AxisLabelController } from './presentation/AxisLabelController';
+import { AutoSelectionTimer } from './selection/AutoSelectionTimer';
+import { PointerInteractionController } from './input/PointerInteractionController';
 import type { ArMenuAction, ArMenuState } from './xr/menu/ArMenuModel';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 
@@ -83,6 +82,8 @@ export class CubeWallPresenter {
   private readonly arController: ArSessionController;
   private readonly connector: BillboardConnector;
   private readonly axisLabels: AxisLabelController;
+  private readonly autoSelection = new AutoSelectionTimer();
+  private readonly pointer: PointerInteractionController;
   private readonly arMenuAction?: (action: ArMenuAction) => void;
   private readonly engine: Engine;
   private readonly scene: Scene;
@@ -95,8 +96,6 @@ export class CubeWallPresenter {
   private readonly billboardStateChange?: (state: BillboardDisplayState | null) => void;
   private readonly cameraSettingsChange?: (update: Partial<PresenterSettings>) => void;
   private readonly cameraController: CameraOrbitController;
-  private autoSequence: CubeCell[] = [];
-  private autoSequenceIndex = 0;
   private billboardContentVersion = 0;
   private currentBillboardInfo: CubeSelectionInfo | null = null;
   private currentBillboardCell: CubeCell | null = null;
@@ -106,22 +105,14 @@ export class CubeWallPresenter {
   private disposed = false;
   private debugProbeTimer: ReturnType<typeof setTimeout> | null = null;
   private hoverInteractionEnabled = true;
-  private autoSelectEnabled = false;
-  private autoSelectInterval = 6;
-  private autoSelectElapsed = 0;
   private contentItems: CubeContentItem[] = [];
   private contentOptionsSnapshot: Partial<CubeContentOptions> | undefined;
   private physicsActive = false;
   private physicsMode: 'off' | 'classic' | 'anchor' = 'off';
-  private physicsDragCandidate: { cell: CubeCell; startX: number; startY: number } | null = null;
-  private activePhysicsDrag: { cell: CubeCell } | null = null;
-  private skipNextPhysicsClick = false;
   private savedHoverInteraction = true;
-  private savedAutoSelect = false;
   private billboardScreenMetrics: BillboardScreenMetrics | null = null;
   private pendingDofUpdateFrames = 0;
   private readonly forceDofFrames = 6;
-  private wheelListener: ((event: WheelEvent) => void) | null = null;
   private pendingWheelSyncFrames = 0;
   private lastEmittedBillboard: BillboardDisplayState | null = null;
 
@@ -177,18 +168,15 @@ export class CubeWallPresenter {
   public async triggerPhysicsDrop(): Promise<void> {
     if (this.physicsMode === 'off') {
       this.savedHoverInteraction = this.hoverInteractionEnabled;
-      this.savedAutoSelect = this.autoSelectEnabled;
       this.cubeField.selectCell(null);
       this.updateBillboard(null, { animate: false, reason: 'system' });
       this.selectionChange?.(null);
       this.billboardStateChange?.(null);
       this.physicsActive = true;
       this.physicsMode = 'classic';
-      this.autoSelectEnabled = false;
+      this.autoSelection.setSuspended(true);
       this.hoverInteractionEnabled = false;
-      this.physicsDragCandidate = null;
-      this.activePhysicsDrag = null;
-      this.skipNextPhysicsClick = false;
+      this.pointer.resetPhysicsDrag();
       await this.cubeField.enablePhysics('classic');
       // F3 may have been pressed again while Havok was loading.
       const modeAfterLoad = this.physicsMode as 'off' | 'classic' | 'anchor';
@@ -209,11 +197,8 @@ export class CubeWallPresenter {
     this.physicsActive = false;
     this.cubeField.disablePhysics();
     this.hoverInteractionEnabled = this.savedHoverInteraction;
-    this.autoSelectEnabled = this.savedAutoSelect;
-    this.autoSelectElapsed = 0;
-    this.physicsDragCandidate = null;
-    this.activePhysicsDrag = null;
-    this.skipNextPhysicsClick = false;
+    this.autoSelection.setSuspended(false);
+    this.pointer.resetPhysicsDrag();
     this.axisLabels.refreshAnchors();
     this.debug?.('[Physics] Mode: off');
   }
@@ -330,8 +315,29 @@ export class CubeWallPresenter {
         this.pendingDofUpdateFrames = this.forceDofFrames;
       }
     };
-    this.setupPointerInteractions();
-    this.setupWheelCapture();
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const host = this;
+    this.pointer = new PointerInteractionController(this.scene, this.canvasElement, {
+      cubeField: this.cubeField,
+      cameraController: this.cameraController,
+      getCamera: () => this.sceneController.getCamera(),
+      isDisposed: () => host.disposed,
+      isArActive: () => host.arController.isActive,
+      isPhysicsActive: () => host.physicsActive,
+      isHoverEnabled: () => host.hoverInteractionEnabled,
+      applySelection: (cell, meshName) => this.applySelection(cell, meshName),
+      clearSelection: (animate) => {
+        this.cubeField.selectCell(null);
+        this.updateBillboard(null, { animate, reason: 'manual' });
+      },
+      setManualCameraOverride: (active) => this.setManualCameraOverride(active),
+      syncRelativeCameraSettings: () => this.syncRelativeCameraSettings(),
+      refocusDepthOfField: () => this.updateDepthOfFieldFocus(null),
+      onWheel: () => {
+        this.pendingWheelSyncFrames = 2;
+      },
+      logDebug: (line) => this.logDebug(line),
+    });
 
     this.axisLabels = new AxisLabelController({
       scene: this.scene,
@@ -341,7 +347,7 @@ export class CubeWallPresenter {
       onLabelsChange: onAxisLabelsChange,
       debug: (line) => this.logDebug(line),
     });
-    this.refreshAutoSequence();
+    this.autoSelection.setCells(this.cubeField.getAllCells());
 
     this.axisLabels.refreshAnchors();
     this.axisLabels.updateStartDate();
@@ -384,348 +390,6 @@ export class CubeWallPresenter {
   private setManualCameraOverride(active: boolean): void {
     this.cameraController.setManualOverride(active);
   }
-
-  private setupWheelCapture(): void {
-    this.wheelListener = () => {
-      this.setManualCameraOverride(true);
-      this.cameraController.captureCurrentCameraState();
-      this.pendingWheelSyncFrames = 2;
-    };
-    this.canvasElement.addEventListener('wheel', this.wheelListener, { passive: true });
-  }
-
-  private setupPointerInteractions(): void {
-    let lastHoveredId: number | null = null;
-    let pointerDownInfo: { x: number; y: number; shouldTriggerClick: boolean; button: number } | null = null;
-    let pendingPick: { cell: CubeCell; meshName?: string } | null = null;
-    let pointerClickHandled = false;
-
-    this.scene.onPointerObservable.add((pointerInfo: PointerInfo) => {
-      if (this.disposed) return;
-      // In AR, XR controllers synthesize pointer events without screen coordinates;
-      // selection and grabbing come from ArSessionController, only hover ripples stay.
-      if (this.arController.isActive && pointerInfo.type !== PointerEventTypes.POINTERMOVE) return;
-      switch (pointerInfo.type) {
-        case PointerEventTypes.POINTERMOVE: {
-          const moveEvent = pointerInfo.event as PointerEvent | MouseEvent | null;
-          if (
-            moveEvent &&
-            pointerDownInfo &&
-            'clientX' in moveEvent &&
-            'clientY' in moveEvent &&
-            (moveEvent.buttons & 1)
-          ) {
-            const dx = moveEvent.clientX - pointerDownInfo.x;
-            const dy = moveEvent.clientY - pointerDownInfo.y;
-            if (Math.sqrt(dx * dx + dy * dy) > 6) {
-              pointerDownInfo.shouldTriggerClick = false;
-            this.setManualCameraOverride(true);
-            this.cameraController.interruptAnimation();
-            this.logDebug(
-              `[Pointer] Drag detected (dx=${dx.toFixed(2)}, dy=${dy.toFixed(2)}). Manual override engaged.`,
-            );
-            }
-          }
-          if (this.physicsActive) {
-            if (!this.arController.isActive) this.handlePhysicsPointerMove(pointerInfo);
-            break;
-          }
-          if (!this.hoverInteractionEnabled) {
-            lastHoveredId = null;
-            break;
-          }
-          const pickInfo = this.resolvePickInfo(pointerInfo, true);
-          const mesh = pickInfo?.pickedMesh ?? null;
-          if (!mesh || !mesh.isPickable) {
-            lastHoveredId = null;
-            break;
-          }
-          if (mesh.uniqueId === lastHoveredId) break;
-          lastHoveredId = mesh.uniqueId;
-          const cell = this.cubeField.getCellFromMesh(mesh);
-          if (cell && !cell.isSelected) {
-            this.cubeField.triggerRipple(cell);
-          }
-          break;
-        }
-        case PointerEventTypes.POINTERPICK: {
-          this.logDebug('POINTERPICK');
-          // In AR, selection comes from the XR 'select' event (see selectFromAr).
-          if (this.arController.isActive) break;
-          if (pointerDownInfo && pendingPick) {
-            break;
-          }
-          this.handlePick(pointerInfo);
-          break;
-        }
-        case PointerEventTypes.POINTERDOWN: {
-          const event = pointerInfo.event as PointerEvent | MouseEvent;
-          const button = 'button' in event ? event.button ?? 0 : 0;
-          if (button !== 0 && button !== 1 && button !== 2) break;
-          pointerClickHandled = false;
-          if ('clientX' in event && 'clientY' in event) {
-            pointerDownInfo = {
-              x: event.clientX,
-              y: event.clientY,
-              shouldTriggerClick: button === 0,
-              button,
-            };
-          } else {
-            pointerDownInfo = null;
-          }
-          if (button !== 0) {
-            this.cameraController.interruptAnimation();
-            this.setManualCameraOverride(true);
-            this.logDebug('[Pointer] Non-left button down -> manual override');
-            break;
-          }
-          const pickInfo = this.resolvePickInfo(pointerInfo);
-          if (pickInfo?.pickedMesh && pickInfo.pickedMesh.isPickable) {
-            const cell = this.cubeField.getCellFromMesh(pickInfo.pickedMesh);
-            if (!cell) {
-              this.logDebug(`POINTERDOWN -> no cube data for mesh ${pickInfo.pickedMesh.name}`);
-              break;
-            }
-            if (typeof event.preventDefault === 'function') event.preventDefault();
-            if (typeof event.stopPropagation === 'function') event.stopPropagation();
-            if (this.physicsActive) {
-              const startX = 'clientX' in event ? event.clientX : 0;
-              const startY = 'clientY' in event ? event.clientY : 0;
-              this.physicsDragCandidate = { cell, startX, startY };
-              this.activePhysicsDrag = null;
-              this.skipNextPhysicsClick = false;
-              this.logDebug(`POINTERDOWN physics candidate -> ${pickInfo.pickedMesh.name}`);
-              pendingPick = null;
-            } else {
-              this.logDebug(`POINTERDOWN on ${pickInfo.pickedMesh.name}`);
-              this.physicsDragCandidate = null;
-              this.activePhysicsDrag = null;
-              this.skipNextPhysicsClick = false;
-              pendingPick = { cell, meshName: pickInfo.pickedMesh.name };
-            }
-          } else {
-            this.logDebug('POINTERDOWN (no pickable mesh) - waiting for POINTERUP/tap');
-            this.physicsDragCandidate = null;
-            this.skipNextPhysicsClick = false;
-            pendingPick = null;
-          }
-          break;
-        }
-        case PointerEventTypes.POINTERUP: {
-          const event = pointerInfo.event as PointerEvent | MouseEvent;
-          const button = 'button' in event ? event.button ?? 0 : 0;
-          if (button !== 0 && button !== 1 && button !== 2) break;
-          if (this.physicsActive) {
-            if (this.activePhysicsDrag) {
-              this.finishActivePhysicsDrag();
-              this.skipNextPhysicsClick = true;
-            } else if (this.physicsDragCandidate && !this.skipNextPhysicsClick) {
-              this.skipNextPhysicsClick = true;
-              this.applySelection(this.physicsDragCandidate.cell);
-            }
-            this.physicsDragCandidate = null;
-            pointerDownInfo = null;
-            pendingPick = null;
-            break;
-          }
-          if (pointerDownInfo && pointerDownInfo.button !== 0) {
-            this.setManualCameraOverride(true);
-            this.syncRelativeCameraSettings();
-            this.logDebug('[Pointer] PointerUp non-left -> manual override stays');
-            pointerDownInfo = null;
-            pendingPick = null;
-            break;
-          }
-          if (pointerDownInfo && pointerDownInfo.button === 0 && 'clientX' in event && 'clientY' in event) {
-            const dx = event.clientX - pointerDownInfo.x;
-            const dy = event.clientY - pointerDownInfo.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            if (distance <= 6) {
-              this.logDebug(`POINTERUP -> treating as click (distance ${distance.toFixed(2)})`);
-              if (pointerDownInfo.shouldTriggerClick) {
-                if (pendingPick) {
-                  this.applySelection(pendingPick.cell, pendingPick.meshName);
-                } else {
-              this.handlePick(pointerInfo);
-                }
-                pointerClickHandled = true;
-              }
-            } else {
-              this.logDebug(`POINTERUP -> manual camera move (drag distance ${distance.toFixed(2)})`);
-              this.setManualCameraOverride(true);
-              this.cameraController.captureCurrentCameraState();
-              this.syncRelativeCameraSettings();
-        this.syncRelativeCameraSettings();
-              if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
-                const dof = this.sceneController.getRenderingPipeline()?.depthOfField;
-                if (dof) {
-                  const currentDistance = dof.focusDistance / DOF_WORLD_TO_MM;
-                  this.config.depthOfFieldFocusDistance = currentDistance;
-                  this.config.depthOfFieldFStop = dof.fStop;
-                  this.updateDepthOfFieldFocus(null);
-                }
-              }
-              this.syncRelativeCameraSettings();
-              pointerClickHandled = true;
-            }
-          }
-          pointerDownInfo = null;
-          pendingPick = null;
-          break;
-        }
-        case PointerEventTypes.POINTERTAP: {
-          this.logDebug('POINTERTAP');
-          if (this.arController.isActive) break;
-          if (pointerClickHandled) {
-            pointerClickHandled = false;
-            pendingPick = null;
-            break;
-          }
-          if (this.physicsActive) {
-            if (this.skipNextPhysicsClick) {
-              this.skipNextPhysicsClick = false;
-              break;
-            }
-          }
-          this.handlePick(pointerInfo);
-          if (this.physicsActive) {
-            this.skipNextPhysicsClick = false;
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    });
-  }
-
-  private handlePhysicsPointerMove(pointerInfo: PointerInfo): void {
-    if (!this.physicsActive) return;
-    const event = pointerInfo.event as PointerEvent | MouseEvent | null;
-    if (!event) return;
-    const buttons = 'buttons' in event ? event.buttons ?? 0 : 0;
-
-    if (this.activePhysicsDrag) {
-      if (buttons === 0) {
-        this.finishActivePhysicsDrag();
-      } else {
-        this.updateActivePhysicsDrag(pointerInfo);
-      }
-      this.skipNextPhysicsClick = true;
-      return;
-    }
-
-    if (!this.physicsDragCandidate) {
-      return;
-    }
-
-    if (buttons === 0) {
-      return;
-    }
-
-    if (!('clientX' in event) || !('clientY' in event)) {
-      return;
-    }
-
-    const dx = event.clientX - this.physicsDragCandidate.startX;
-    const dy = event.clientY - this.physicsDragCandidate.startY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    if (distance <= 6) {
-      return;
-    }
-
-    const cell = this.physicsDragCandidate.cell;
-    this.startPhysicsDrag(cell);
-    this.activePhysicsDrag = { cell };
-    this.physicsDragCandidate = null;
-    this.skipNextPhysicsClick = true;
-    this.updateActivePhysicsDrag(pointerInfo);
-  }
-
-  private startPhysicsDrag(cell: CubeCell): void {
-    this.logDebug(`physics drag start -> cube_${cell.gridX}_${cell.gridZ}`);
-    this.cubeField.selectCell(null);
-    this.updateBillboard(null, { animate: false, reason: 'manual' });
-    this.cubeField.beginPhysicsDrag(cell);
-  }
-
-  private updateActivePhysicsDrag(pointerInfo: PointerInfo): void {
-    if (!this.activePhysicsDrag) return;
-    const dragCell = this.activePhysicsDrag.cell;
-    const point = this.getGroundIntersection(pointerInfo);
-    if (!point) return;
-    this.cubeField.updatePhysicsDrag(dragCell, point);
-  }
-
-  private finishActivePhysicsDrag(): void {
-    if (!this.activePhysicsDrag) return;
-    this.cubeField.endPhysicsDrag(this.activePhysicsDrag.cell);
-    this.logDebug(`physics drag end -> cube_${this.activePhysicsDrag.cell.gridX}_${this.activePhysicsDrag.cell.gridZ}`);
-    this.activePhysicsDrag = null;
-  }
-
-  private getGroundIntersection(pointerInfo: PointerInfo): Vector3 | null {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas) return null;
-    const event = pointerInfo.event as PointerEvent | MouseEvent | null;
-    if (!event) return null;
-
-    let x = 0;
-    let y = 0;
-    if ('offsetX' in event && typeof event.offsetX === 'number' && typeof event.offsetY === 'number') {
-      x = event.offsetX;
-      y = event.offsetY;
-    } else if ('clientX' in event && 'clientY' in event) {
-      const rect = canvas.getBoundingClientRect();
-      x = event.clientX - rect.left;
-      y = event.clientY - rect.top;
-    } else {
-      return null;
-    }
-
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const scaledX = x * scaleX;
-    const scaledY = y * scaleY;
-
-    const camera = this.sceneController.getCamera();
-    const ray = this.scene.createPickingRay(scaledX, scaledY, Matrix.Identity(), camera);
-    const groundHeight = this.cubeField.getPhysicsGroundWorldY();
-    const plane = Plane.FromPositionAndNormal(new Vector3(0, groundHeight, 0), Vector3.Up());
-    const distance = ray.intersectsPlane(plane);
-    if (distance === null) {
-      return null;
-    }
-    return ray.origin.add(ray.direction.scale(distance));
-  }
-
-  private handlePick(pointerInfo: PointerInfo, pickInfoOverride?: PickingInfo | null): void {
-    const pickInfo = pickInfoOverride ?? this.resolvePickInfo(pointerInfo);
-    if (!pickInfo) {
-      this.logDebug('handlePick: no pick info');
-      this.cubeField.selectCell(null);
-      this.updateBillboard(null, { reason: 'manual' });
-      return;
-    }
-
-    const mesh = pickInfo.pickedMesh;
-    if (!mesh || !mesh.isPickable) {
-      this.logDebug('handlePick: mesh missing or not pickable');
-      this.cubeField.selectCell(null);
-      this.updateBillboard(null, { reason: 'manual' });
-      return;
-    }
-
-    const cell = this.cubeField.getCellFromMesh(mesh);
-    if (!cell) {
-      this.logDebug(`handlePick: no cube data for mesh ${mesh.name}`);
-      this.cubeField.selectCell(null);
-      this.updateBillboard(null, { reason: 'manual' });
-      return;
-    }
-    this.applySelection(cell, mesh.name);
-    }
 
   /** True when the browser can start an immersive-AR session (e.g. Meta Quest). */
   public static isArSupported(): Promise<boolean> {
@@ -844,7 +508,7 @@ export class CubeWallPresenter {
     }
     this.currentSelectionNormalWorld = this.cubeField.getLiftNormalWorld(target);
     this.updateBillboard(target, { reason });
-    this.autoSelectElapsed = 0;
+    this.autoSelection.restart();
     const cameraPos = this.sceneController.getCamera().position.clone();
     this.updateDepthOfFieldFocus(target, cameraPos);
     const shouldAnimateCamera =
@@ -932,42 +596,6 @@ export class CubeWallPresenter {
     this.emitHtmlBillboardState();
   }
 
-  private refreshAutoSequence(): void {
-    this.autoSequence = this.cubeField.getAllCells();
-    this.autoSequenceIndex = 0;
-  }
-
-  private getNextAutoSequenceCell(): CubeCell | null {
-    if (this.autoSequence.length === 0) {
-      this.refreshAutoSequence();
-    }
-    const total = this.autoSequence.length;
-    if (total === 0) return null;
-    let attempts = 0;
-    while (attempts < total) {
-      const candidate = this.autoSequence[this.autoSequenceIndex % total];
-      this.autoSequenceIndex = (this.autoSequenceIndex + 1) % total;
-      attempts += 1;
-      if (!candidate) continue;
-      if (candidate.mesh.isDisposed()) continue;
-      if (candidate.isSelected) continue;
-      return candidate;
-    }
-    this.refreshAutoSequence();
-    const refreshedTotal = this.autoSequence.length;
-    attempts = 0;
-    while (attempts < refreshedTotal) {
-      const candidate = this.autoSequence[this.autoSequenceIndex % refreshedTotal];
-      this.autoSequenceIndex = (this.autoSequenceIndex + 1) % refreshedTotal;
-      attempts += 1;
-      if (!candidate) continue;
-      if (candidate.mesh.isDisposed()) continue;
-      if (candidate.isSelected) continue;
-      return candidate;
-    }
-    return null;
-  }
-
   private performAutoSelection(cell: CubeCell): void {
     const triggerRipple = this.hoverInteractionEnabled && !this.physicsActive;
     this.commitSelection(cell, {
@@ -975,73 +603,6 @@ export class CubeWallPresenter {
       animateCamera: true,
       reason: 'auto',
     });
-  }
-
-  private resolvePickInfo(pointerInfo: PointerInfo, silent = false): PickingInfo | null {
-    if (pointerInfo.pickInfo?.hit && pointerInfo.pickInfo.pickedMesh) {
-      return pointerInfo.pickInfo;
-    }
-    
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas) return null;
-    
-    const event = pointerInfo.event as PointerEvent | MouseEvent | null;
-    if (!event) return null;
-    
-    // Get coordinates relative to canvas
-    let x = 0;
-    let y = 0;
-    
-      if ('offsetX' in event && typeof event.offsetX === 'number' && typeof event.offsetY === 'number') {
-      x = event.offsetX;
-      y = event.offsetY;
-    } else if ('clientX' in event && 'clientY' in event) {
-      const rect = canvas.getBoundingClientRect();
-      x = event.clientX - rect.left;
-      y = event.clientY - rect.top;
-    } else {
-      return null;
-    }
-    
-    // Scale coordinates to canvas internal resolution
-        const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const scaledX = x * scaleX;
-    const scaledY = y * scaleY;
-    
-    // Try picking with scaled coordinates
-    const pickResult = this.scene.pick(scaledX, scaledY, (mesh) => mesh.isPickable);
-    
-        if (!silent) {
-      const pickableMeshes = this.scene.meshes.filter((m) => m.isPickable);
-      this.logDebug(`pick(${Math.round(x)}, ${Math.round(y)}) scaled to (${Math.round(scaledX)}, ${Math.round(scaledY)}) => ${pickResult?.pickedMesh?.name ?? 'none'} [${pickableMeshes.length} pickable, canvas ${canvas.width}x${canvas.height}, display ${Math.round(rect.width)}x${Math.round(rect.height)}]`);
-    }
-
-    if (pickResult && pickResult.hit && pickResult.pickedMesh) {
-      return pickResult;
-    }
-
-    const camera = this.sceneController.getCamera();
-    const ray = this.scene.createPickingRay(scaledX, scaledY, Matrix.Identity(), camera);
-    const rayPick = this.scene.pickWithRay(ray, (mesh) => mesh.isPickable);
-
-    if (!silent) {
-      this.logDebug(`ray pick => ${rayPick?.pickedMesh?.name ?? 'none'}`);
-    }
-
-    if (rayPick && rayPick.hit && rayPick.pickedMesh) {
-      return rayPick;
-    }
-
-    // fallback: try center of canvas or selection direction
-    const fallbackCanvas = this.engine.getRenderingCanvas();
-    if (!fallbackCanvas) return null;
-    const centerPick = this.scene.pick(fallbackCanvas.width / 2, fallbackCanvas.height / 2, (mesh) => mesh.isPickable);
-    if (centerPick && centerPick.hit && centerPick.pickedMesh) {
-      return centerPick;
-    }
-    return null;
   }
 
   private logDebug(line: string): void {
@@ -1169,7 +730,15 @@ export class CubeWallPresenter {
       }
       this.sceneTime += deltaTime * this.config.waveSpeed;
       this.cubeField.update(deltaTime, this.sceneTime);
-      this.updateAutoSelection(deltaTime);
+      // Kiosk mode: the next cube is due every few seconds (not while physics runs).
+      const autoCell = this.physicsActive
+        ? null
+        : this.autoSelection.update(
+            deltaTime,
+            () => this.cubeField.getAllCells(),
+            () => this.cubeField.getRandomCell(true),
+          );
+      if (autoCell) this.performAutoSelection(autoCell);
       if (this.config.selectionCameraFollowEnabled && this.config.camera.followMode === 'continuous') {
         const followCell = this.currentBillboardCell ?? this.cubeField.getCurrentSelection();
         if (followCell) {
@@ -1209,7 +778,7 @@ export class CubeWallPresenter {
       const allCells: CubeCell[] = this.cubeField.getAllCells();
       cell = allCells.find((candidate: CubeCell) => !candidate.isSelected) ?? allCells[0] ?? null;
     } else {
-      cell = this.getNextAutoSequenceCell();
+      cell = this.autoSelection.next(() => this.cubeField.getAllCells());
       if (!cell) {
         cell = this.cubeField.getRandomCell(true);
       }
@@ -1226,7 +795,7 @@ export class CubeWallPresenter {
         return;
       }
     }
-    this.autoSelectElapsed = 0;
+    this.autoSelection.restart();
     this.performAutoSelection(cell);
   }
 
@@ -1236,7 +805,7 @@ export class CubeWallPresenter {
       this.logDebug('[AutoSelect] No cubes available for random selection.');
       return;
     }
-    this.autoSelectElapsed = 0;
+    this.autoSelection.restart();
     this.performAutoSelection(cell);
   }
 
@@ -1255,7 +824,7 @@ export class CubeWallPresenter {
     if (targetGridSize !== this.config.gridSize) {
       this.config.gridSize = targetGridSize;
       this.cubeField.rebuild(this.config.gridSize);
-      this.refreshAutoSequence();
+      this.autoSelection.setCells(this.cubeField.getAllCells());
       this.updateBillboard(null, { animate: false, reason: 'system' });
       this.axisLabels.refreshAnchors();
     }
@@ -1271,9 +840,7 @@ export class CubeWallPresenter {
     this.config.fieldAnimationSpeed = Math.max(0, settings.fieldAnimationSpeed);
     this.config.fieldGlobalScale = Math.max(0.1, settings.fieldGlobalScale);
     this.hoverInteractionEnabled = settings.enableHoverInteraction;
-    this.autoSelectEnabled = settings.autoSelectEnabled;
-    this.autoSelectInterval = Math.max(1, settings.autoSelectInterval);
-    this.autoSelectElapsed = this.autoSelectEnabled ? Math.min(this.autoSelectElapsed, this.autoSelectInterval) : 0;
+    this.autoSelection.configure(settings.autoSelectEnabled, settings.autoSelectInterval);
     this.config.interactionRadius = settings.interactionRadius;
     this.config.interactionLift = settings.interactionLift;
     this.config.selectedCubeRotation = settings.selectedCubeRotation;
@@ -1422,31 +989,13 @@ export class CubeWallPresenter {
       clearTimeout(this.debugProbeTimer);
       this.debugProbeTimer = null;
     }
-    if (this.wheelListener) {
-      this.canvasElement.removeEventListener('wheel', this.wheelListener);
-      this.wheelListener = null;
-    }
+    this.pointer.dispose();
     this.connector.dispose();
     this.arController.dispose();
     this.cubeField.dispose();
     this.billboardOverlay.dispose();
     this.sceneController.dispose();
     this.axisLabels.dispose();
-  }
-
-  private updateAutoSelection(deltaTime: number): void {
-    if (!this.autoSelectEnabled || this.physicsActive) return;
-    this.autoSelectElapsed += deltaTime;
-    if (this.autoSelectElapsed < this.autoSelectInterval) return;
-    this.autoSelectElapsed = 0;
-
-    let cell = this.getNextAutoSequenceCell();
-    if (!cell) {
-      cell = this.cubeField.getRandomCell(true);
-    }
-    if (!cell || cell.isSelected) return;
-
-    this.performAutoSelection(cell);
   }
 
   private readonly handleHtmlBillboardClose = () => {
