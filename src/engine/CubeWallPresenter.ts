@@ -106,6 +106,8 @@ export class CubeWallPresenter {
   private sceneTime = 0;
   private disposed = false;
   private debugProbeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Grid size the settings ask for (the field may be larger in tile mode). */
+  private requestedGridSize: number;
   private hoverInteractionEnabled = true;
   private contentItems: CubeContentItem[] = [];
   private contentOptionsSnapshot: Partial<CubeContentOptions> | undefined;
@@ -276,6 +278,7 @@ export class CubeWallPresenter {
   }: CubeWallPresenterOptions) {
     this.arMenuAction = onArMenuAction;
     this.config = config;
+    this.requestedGridSize = config.gridSize;
     this.canvasElement = canvas;
     this.sceneController = new SceneController({ canvas, config: this.config });
     this.engine = this.sceneController.getEngine();
@@ -847,9 +850,10 @@ export class CubeWallPresenter {
     const previousWaveRotation = this.config.waveRotationEnabled;
     const previousTileCaptions = this.config.tiles.captionsEnabled;
     const targetGridSize = Math.min(Math.max(3, Math.round(settings.gridSize)), this.config.maxGridSize);
-    if (targetGridSize !== this.config.gridSize) {
-      this.config.gridSize = targetGridSize;
-      this.cubeField.rebuild(this.config.gridSize);
+    // Compared with the requested size: tile mode grows the actual grid to fit its tiles.
+    if (targetGridSize !== this.requestedGridSize) {
+      this.requestedGridSize = targetGridSize;
+      this.cubeField.rebuild(targetGridSize);
       this.autoSelection.setCells(this.cubeField.getAllCells());
       this.updateBillboard(null, { animate: false, reason: 'system' });
       this.axisLabels.refreshAnchors();

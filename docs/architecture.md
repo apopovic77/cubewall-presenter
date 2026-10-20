@@ -47,6 +47,7 @@ classDiagram
   class CubeAnimator
   class CellGeometry
   class TileSet
+  class TileGroups
   class CubeInstanceRenderer
   class FieldPhysics
   class PointerInteractionController
@@ -75,6 +76,7 @@ classDiagram
   CubeField --> CubeAnimator
   CubeField --> CellGeometry
   CubeField --> TileSet
+  TileSet --> TileGroups
   CubeField --> CubeInstanceRenderer
   CubeField --> FieldPhysics
 ```
@@ -84,7 +86,7 @@ classDiagram
 | `layouts/` | `FieldLayoutEngine` and one `FieldDefinition` per shape (grid, line, masonry, spiral, sphere, helix, chaos): index → position, cross-fade between two shapes |
 | `content/` | `ContentAssigner`: which item goes onto which grid cell (matrix / axis grouping) |
 | `cubes/` | per-cell work: `CubeTextureLoader` (atlas, detail texture, UVs, aspect crop), `FallbackImageSource`, `CubeAnimator` (motion without physics), `CellGeometry` (orientation, tile scale), face UV tables |
-| `tiles/` | tile mode: `TileSet` (descriptors, footprints), glass caption tiles, tile materials |
+| `tiles/` | tile mode: `TileSet` (descriptors, layout footprints), `TileGroups` (image + caption as one domino), glass caption tiles, tile materials |
 | `instancing/` | `CubeInstanceRenderer`: all cubes / image tiles as thin instances with one texture atlas; the cell meshes are invisible proxies |
 | `physics/` | `FieldPhysics`: Havok in field space (unaffected by the AR anchor); attractor to the layout, hold in hand, throw |
 | `input/` | `PointerInteractionController`: mouse / touch (hover, click vs. camera drag, physics drag, wheel) |
@@ -144,3 +146,21 @@ classDiagram
 - **Slot claiming:** in free-form shapes (sphere, spiral, helix, chaos) every element claims the nearest free slot, in activation order, through a uniform grid of the slots (≈15 ms for 625 elements; 20–40 % shorter paths from the grid). Ordered shapes (grid, line, masonry) keep the index order, because rows and columns carry meaning (publishing days).
 - **Physics:** the per-element target flows into `FieldPhysics` as the attractor, so fronts work in both physics modes as well.
 - **Next:** a GPU backend can evaluate the same `FieldTransition` data in the vertex shader (per-instance from-position, slot and delay; fields and fronts as GLSL), for scenes without physics and with far more elements. Picking, grabbing and physics keep needing CPU positions.
+
+## Tile groups: image + caption as one domino
+
+With captions on, every item becomes two tiles: an image tile (leader) and a glass caption tile (follower). `TileGroups` pairs them, and everything treats the pair as one object:
+
+```mermaid
+graph LR
+  Set["TileSet<br/>descriptors, layout footprints"] --> Groups["TileGroups<br/>leader ↔ follower, offsets"]
+  Groups --> Layout["Layout pass<br/>slot = group centre"]
+  Groups --> Anim["CubeAnimator<br/>caption rides in the image's frame"]
+  Groups --> Phys["FieldPhysics<br/>one body, two boxes"]
+```
+
+- **Layout:** the leader's layout footprint covers the whole group (image + gap + caption), so masonry packs the pair; the sampled leader position is the group centre and `placeInLayout` moves both tiles to their places around it, along the tiles' local −Y. Upright tiles stand the caption under the image; flat ones lay it next to it.
+- **Motion:** the caption's offset lives in the image's frame, so wave, selection spin and morphs turn the pair as one.
+- **Physics:** the image's body gets a `PhysicsShapeContainer` with both boxes (`PhysicsCube.companion`); captions have no body of their own and are posed from it. Every size change goes through `CubeField.applyCellGeometry`, which rebuilds the group's body under physics (images learn their aspect ratio after loading).
+- **Grid:** tile mode grows the grid to a cell per tile (`TileSet.requiredGridSize`); the presenter compares the settings' grid size with what it requested, not with the grown grid.
+- **Not instanced:** caption tiles keep their own mesh and full-resolution texture. A shared 4096 px atlas would leave ~163 px per caption at 625 items, too small for text.

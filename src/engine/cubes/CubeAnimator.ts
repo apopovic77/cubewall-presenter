@@ -2,6 +2,7 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import type { CubeWallConfig } from '../../config/AppConfig';
 import type { CubeCell } from '../CubeField';
+import type { TileGroups } from '../tiles/TileGroups';
 import { easeOutCubic, isSelectableCell } from './cellUtils';
 
 /**
@@ -17,36 +18,37 @@ export class CubeAnimator {
     this.config = config;
   }
 
-  /** `normalDirection`: sign of the field's up axis (selection lifts along it). */
-  public animate(cells: readonly CubeCell[], deltaTime: number, sceneTime: number, normalDirection: number): void {
+  /**
+   * `normalDirection`: sign of the field's up axis (selection lifts along it).
+   * `groups`: caption tiles ride rigidly on their image tile (offset in its
+   * frame, so they turn with it); a leader comes before its caption in `cells`.
+   */
+  public animate(
+    cells: readonly CubeCell[],
+    deltaTime: number,
+    sceneTime: number,
+    normalDirection: number,
+    groups: TileGroups,
+  ): void {
     const rotationWaveEnabled = this.config.waveRotationEnabled;
     // Frame-rate independent smoothing; a plain `speed * dt` overshoots on long frames.
     const interactionBlend = 1 - Math.exp(-this.config.interactionLerpSpeed * deltaTime);
 
-    cells.forEach((cube) => {
+    cells.forEach((cube, index) => {
       // A cube held in an AR hand is posed by holdCube; it glides back once released.
       if (cube.isBeingDragged) return;
       if (!isSelectableCell(cube)) {
-        const descriptor = cube.tileDescriptor;
-        const stacking = descriptor?.stacking;
-        if (stacking?.inheritAnchorPosition && stacking.groupId) {
-          const leader = cells.find(
-            (candidate) =>
-              candidate.tileDescriptor?.stacking?.groupId === stacking.groupId &&
-              candidate.tileDescriptor?.stacking?.role === 'leader',
-          );
-          if (leader) {
-            const offset = this.stackOffsetScratch;
-            offset.copyFrom(cube.basePosition).subtractInPlace(leader.basePosition);
-            cube.currentPosition.copyFrom(leader.currentPosition);
-            cube.currentPosition.addInPlace(offset);
-            cube.targetPosition.copyFrom(cube.currentPosition);
-            cube.currentRotation.copyFrom(leader.currentRotation);
-            cube.targetRotation.copyFrom(leader.currentRotation);
-            cube.mesh.position.copyFrom(cube.currentPosition);
-            cube.mesh.rotation.copyFrom(cube.currentRotation);
-            return;
-          }
+        const leaderIndex = groups.leaderOf(index);
+        const leader = leaderIndex >= 0 ? cells[leaderIndex] : undefined;
+        if (leader) {
+          const offset = groups.followerOffsetToRef({ leader: leaderIndex, follower: index }, this.stackOffsetScratch);
+          groups.placeToRef(leader.currentPosition, leader.currentRotation, offset, cube.currentPosition);
+          cube.targetPosition.copyFrom(cube.currentPosition);
+          cube.currentRotation.copyFrom(leader.currentRotation);
+          cube.targetRotation.copyFrom(leader.currentRotation);
+          cube.mesh.position.copyFrom(cube.currentPosition);
+          cube.mesh.rotation.copyFrom(cube.currentRotation);
+          return;
         }
         cube.currentPosition.copyFrom(cube.basePosition);
         cube.targetPosition.copyFrom(cube.basePosition);

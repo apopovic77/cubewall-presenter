@@ -12,7 +12,6 @@ export interface TileFootprint {
 export interface TileStacking {
   groupId: string;
   role: 'leader' | 'follower';
-  yOffset: number;
   inheritAnchorPosition: boolean;
   affectsMasonryFlow: boolean;
 }
@@ -39,6 +38,5 @@ export interface TileBuildContext {
   textTileWidth: number;
   textTileThickness: number;
   imageTileThickness: number;
-  verticalGap: number;
 }
 

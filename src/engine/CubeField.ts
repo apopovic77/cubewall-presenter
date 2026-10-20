@@ -29,7 +29,7 @@ import { LineWaveField } from './layouts/fields/LineWaveField';
 import type { TileDescriptor, TileFootprint } from './tiles/TileTypes';
 import { MasonryField } from './layouts/fields/MasonryField';
 import { CubeInstanceRenderer } from './instancing/CubeInstanceRenderer';
-import { FieldPhysics, type FieldPhysicsMode } from './physics/FieldPhysics';
+import { FieldPhysics, type FieldPhysicsMode, type PhysicsCompanion, type PhysicsCube } from './physics/FieldPhysics';
 import { ContentAssigner, type AxisValueInfo } from './content/ContentAssigner';
 import { CubeTextureLoader, type CubeTextureHost } from './cubes/CubeTextureLoader';
 import { FallbackImageSource } from './cubes/FallbackImageSource';
@@ -39,6 +39,9 @@ import { TileSet } from './tiles/TileSet';
 import { createActivationFront } from './transition/ActivationFront';
 import { isSelectableCell } from './cubes/cellUtils';
 import { buildTileFaceUVs, computeFaceUVs } from './cubes/CubeFaceUvs';
+
+/** Upper bound of the grid tile mode grows to (two cells per item with captions). */
+const MAX_TILE_GRID_SIZE = 150;
 
 
 export interface CubeSelectionInfo {
@@ -79,6 +82,8 @@ export interface CubeCell {
   footprint: TileFootprint;
   isBeingDragged: boolean;
   physicsSpinAngle: number;
+  /** Image tile with a caption: the caption tile, part of this cell's physics body. */
+  companion?: PhysicsCompanion | null;
   textureAspectRatio: number | null;
   textureSidePattern: TextureSidePattern;
   textureMirrorTopBottom: boolean;
@@ -106,6 +111,7 @@ export class CubeField {
   private contentItems: CubeContentItem[] = [];
   /** Rigid-body simulation (drop / anchor modes); runs in field space, see FieldPhysics. */
   private readonly physics: FieldPhysics;
+  private readonly scalingScratch = new Vector3();
   private readonly holdMatrix = new Matrix();
   private contentGeneration = 0;
   /** Geometry mode the instanced renderer is currently set up for. */
@@ -118,7 +124,6 @@ export class CubeField {
   private readonly fieldEngine: FieldLayoutEngine;
   private fieldTime = 0;
   private readonly fieldMorphDurationSeconds = 6;
-  private stackingAnchors = new Map<string, { x: number; z: number }>();
   private layoutDirty = false;
   private readonly tileMaterialManager: TileMaterialManager;
   private readonly fallback: FallbackImageSource;
@@ -133,7 +138,7 @@ export class CubeField {
 
   public applyGeometrySettings(): void {
     this.cubes.forEach((cell) => {
-      this.geometry.apply(cell, cell.textureAspectRatio);
+      this.applyCellGeometry(cell, cell.textureAspectRatio);
       if (this.config.geometryMode === 'tile' && cell.tileDescriptor) {
         this.tileMaterialManager.applyTileMaterials(cell, cell.tileDescriptor);
       } else {
@@ -382,7 +387,6 @@ export class CubeField {
       this.fieldTime += deltaTime * speed;
     }
 
-    this.stackingAnchors.clear();
     this.fieldEngine.setContext({
       totalCount: this.cubes.length,
       gridSize: this.config.gridSize,
@@ -401,22 +405,11 @@ export class CubeField {
 
     const effectiveTime = initial ? 0 : this.currentFieldTime();
     const positions = this.fieldEngine.sampleAll(this.cubes.length, effectiveTime);
+    // Image + caption pairs: placed as one around the group's slot.
+    this.tiles.groups.placeInLayout(positions, (index) => this.cubes[index]?.baseRotation);
     for (let index = 0; index < this.cubes.length; index += 1) {
       const cube = this.cubes[index];
       const position = positions[index];
-      const descriptor = this.tiles.descriptors[index] ?? null;
-      if (descriptor?.stacking) {
-        if (descriptor.stacking.role === 'leader') {
-          this.stackingAnchors.set(descriptor.stacking.groupId, { x: position.x, z: position.z });
-        } else if (descriptor.stacking.inheritAnchorPosition) {
-          const anchor = this.stackingAnchors.get(descriptor.stacking.groupId);
-          if (anchor) {
-            position.x = anchor.x;
-            position.z = anchor.z;
-          }
-        }
-        position.y += descriptor.stacking.yOffset;
-      }
       cube.basePosition.copyFrom(position);
       if (writeMeshes && (initial || !this.config.wavePositionEnabled)) {
         const shouldReset = initial || (!cube.isSelected && !cube.interactionActive && !cube.isBeingDragged);
@@ -431,9 +424,10 @@ export class CubeField {
     }
   }
 
-  public rebuild(gridSize: number, tileCount?: number): void {
+  public rebuild(requestedGridSize: number, tileCount?: number): void {
     this.disposeCubes();
     this.updateRootTransform();
+    const gridSize = Math.max(requestedGridSize, this.tiles.requiredGridSize(MAX_TILE_GRID_SIZE));
     this.config.gridSize = gridSize;
     const total = tileCount ?? gridSize * gridSize;
     const spacing = this.config.cubeSize + this.config.cubeSpacing;
@@ -521,11 +515,49 @@ export class CubeField {
       }
     }
 
+    // Tile mode keeps its tiles across a rebuild (e.g. a grid size change in the settings).
+    if (this.tiles.requiredGridSize(MAX_TILE_GRID_SIZE) > 0) this.applyTileDescriptorsToCubes();
     this.configureInstancing();
     this.applyContentToCubes();
     this.updateFieldLayout(0, true);
     // A rebuild while physics runs keeps the mode: new cubes get bodies at their layout poses.
-    if (this.physics.active) this.physics.attach(this.cubes);
+    if (this.physics.active) this.physics.attach(this.physicsCubes());
+  }
+
+  /**
+   * The bodies of the simulation: one per cell, except caption tiles, which
+   * ride as a second box on their image tile's body.
+   */
+  private physicsCubes(): PhysicsCube[] {
+    const groups = this.tiles.groups;
+    const result: PhysicsCube[] = [];
+    this.cubes.forEach((cube, index) => {
+      if (groups.leaderOf(index) >= 0) return;
+      this.updateCompanion(index);
+      result.push(cube);
+    });
+    return result;
+  }
+
+  /**
+   * Every size / orientation change of a cell goes through here: under
+   * physics, a changed size rebuilds the body of its group (with the caption box).
+   */
+  private applyCellGeometry(cell: CubeCell, aspect: number | null): void {
+    const before = this.scalingScratch.copyFrom(cell.mesh.scaling);
+    this.geometry.apply(cell, aspect);
+    if (!this.physics.active || before.equalsWithEpsilon(cell.mesh.scaling, 1e-5)) return;
+    const index = this.cubes.indexOf(cell);
+    if (index < 0) return;
+    const leader = this.tiles.groups.leaderOf(index);
+    const owner = leader >= 0 ? leader : index;
+    this.updateCompanion(owner);
+    this.physics.refreshBody(this.cubes[owner]);
+  }
+
+  /** The caption tile riding on cell `index` (with the current tile heights), or none. */
+  private updateCompanion(index: number): void {
+    this.cubes[index].companion = this.tiles.groups.companionOf(index, this.cubes);
   }
 
   /**
@@ -608,6 +640,8 @@ export class CubeField {
       if (!current) return;
       this.applyTileDescriptorsToCubes();
       this.configureInstancing();
+      // New pairs and sizes: running physics gets fresh bodies.
+      if (this.physics.active) this.physics.attach(this.physicsCubes());
     } else {
       this.tiles.clear();
       if (this.cubes.length !== this.config.gridSize * this.config.gridSize) {
@@ -618,7 +652,7 @@ export class CubeField {
           cube.footprint = { width: 1, height: 1, depth: 1 };
           cube.mesh.setEnabled(true);
           cube.mesh.isPickable = true;
-          this.geometry.apply(cube, null);
+          this.applyCellGeometry(cube, null);
           this.tileMaterialManager.restoreCubeMaterials(cube);
         });
         if (this.instancingMode !== this.config.geometryMode) this.configureInstancing();
@@ -637,13 +671,8 @@ export class CubeField {
     }
     const current = await this.tiles.build(items, () => generation !== this.contentGeneration);
     if (!current) return false;
-    if (this.tiles.descriptors.length > this.cubes.length) {
-      const requiredGridSize = Math.ceil(Math.sqrt(this.tiles.descriptors.length));
-      if (requiredGridSize > this.config.gridSize) {
-        this.config.gridSize = Math.min(this.config.maxGridSize, requiredGridSize);
-        this.rebuild(this.config.gridSize);
-      }
-    }
+    // Every tile needs a cell (captions double the count); rebuild grows the grid.
+    if (this.tiles.descriptors.length > this.cubes.length) this.rebuild(this.config.gridSize);
     this.layoutDirty = true;
     return true;
   }
@@ -664,7 +693,6 @@ export class CubeField {
 
   private applyTileDescriptorsToCubes(): void {
     const count = Math.min(this.tiles.descriptors.length, this.cubes.length);
-    this.stackingAnchors.clear();
     for (let index = 0; index < count; index += 1) {
       const descriptor = this.tiles.descriptors[index];
       const cube = this.cubes[index];
@@ -679,7 +707,7 @@ export class CubeField {
         cube.material.alpha = descriptor.glass.alpha;
         cube.material.emissiveColor = descriptor.glass.tint.scale(0.2);
       }
-      this.geometry.apply(cube, cube.textureAspectRatio);
+      this.applyCellGeometry(cube, cube.textureAspectRatio);
       if (this.config.geometryMode === 'tile') {
         this.tileMaterialManager.applyTileMaterials(cube, descriptor);
       } else {
@@ -694,6 +722,7 @@ export class CubeField {
       cube.mesh.isPickable = false;
       this.tileMaterialManager.restoreCubeMaterials(cube);
     }
+    this.tiles.refreshFootprints();
     this.layoutDirty = true;
     this.switchFieldForGeometry();
   }
@@ -748,7 +777,7 @@ export class CubeField {
         return field.cubes;
       },
       isInstanced: (cell) => this.isInstanced(cell),
-      applyGeometryToCell: (cell, aspect) => this.geometry.apply(cell, aspect),
+      applyGeometryToCell: (cell, aspect) => this.applyCellGeometry(cell, aspect),
       applyTileAspect: (cell, aspect) => this.applyTileAspect(cell, aspect),
     };
   }
@@ -767,7 +796,7 @@ export class CubeField {
     cell.footprint.height = height;
     const index = this.cubes.indexOf(cell);
     if (index >= 0) this.tiles.setImageAspect(index, aspect);
-    this.geometry.apply(cell, aspect);
+    this.applyCellGeometry(cell, aspect);
     this.layoutDirty = true;
   }
 
@@ -930,7 +959,7 @@ export class CubeField {
       this.physics.drive(deltaTime, this.fieldEngine.isMorphing(), lift);
       return;
     }
-    this.animator.animate(this.cubes, deltaTime, sceneTime, normalDirection);
+    this.animator.animate(this.cubes, deltaTime, sceneTime, normalDirection, this.tiles.groups);
   }
 
   private applyContentToCubes(): void {
@@ -1018,7 +1047,7 @@ export class CubeField {
       cube.physicsSpinAngle = 0;
       cube.isBeingDragged = false;
     });
-    return this.physics.enable(this.cubes, mode);
+    return this.physics.enable(() => this.physicsCubes(), mode);
   }
 
   public setPhysicsMode(mode: FieldPhysicsMode): void {
@@ -1044,7 +1073,7 @@ export class CubeField {
       cube.mesh.rotationQuaternion = null;
       cube.mesh.rotation.copyFrom(localRotation);
       cube.currentRotation.copyFrom(localRotation);
-      this.geometry.apply(cube, cube.textureAspectRatio);
+      this.applyCellGeometry(cube, cube.textureAspectRatio);
       if (cube.tileDescriptor) {
         this.tileMaterialManager.applyTileMaterials(cube, cube.tileDescriptor);
       }

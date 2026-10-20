@@ -4,7 +4,7 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { PhysicsBody } from '@babylonjs/core/Physics/v2/physicsBody';
-import { PhysicsShapeBox } from '@babylonjs/core/Physics/v2/physicsShape';
+import { PhysicsShape, PhysicsShapeBox, PhysicsShapeContainer } from '@babylonjs/core/Physics/v2/physicsShape';
 import type { PhysicsEngine } from '@babylonjs/core/Physics/v2/physicsEngine';
 // Registers scene.enablePhysics / getPhysicsEngine / onAfterPhysicsObservable.
 import '@babylonjs/core/Physics/joinedPhysicsEngineComponent';
@@ -13,6 +13,18 @@ import { HavokPlugin } from '@babylonjs/core/Physics/v2/Plugins/havokPlugin.js';
 import HavokPhysics from '@babylonjs/havok';
 import type { CubeWallConfig } from '../../config/AppConfig';
 
+/**
+ * A second mesh rigidly attached to a cube (the caption tile under an image
+ * tile): it becomes a second box of the cube's body and is posed from it.
+ */
+export interface PhysicsCompanion {
+  mesh: Mesh;
+  /** Its layout position (root space), for the ground and the layout lift. */
+  basePosition: Vector3;
+  /** Its centre in the cube's local frame (root units, unscaled). */
+  offset: Vector3;
+}
+
 /** The cube data the physics needs; CubeField's cells satisfy it. */
 export interface PhysicsCube {
   mesh: Mesh;
@@ -20,6 +32,7 @@ export interface PhysicsCube {
   isBeingDragged?: boolean;
   basePosition: Vector3;
   baseRotation: Vector3;
+  companion?: PhysicsCompanion | null;
 }
 
 export type FieldPhysicsMode = 'classic' | 'anchor';
@@ -65,7 +78,8 @@ function loadHavok(): Promise<unknown> {
 interface CubeBody {
   node: TransformNode;
   body: PhysicsBody;
-  shape: PhysicsShapeBox;
+  /** The body's shape and, for a cube with a companion, the container's two boxes. */
+  shapes: PhysicsShape[];
   motion: PhysicsMotionType;
   /** Smoothed target of an animated body (selection lift / drag), field space. */
   target: Vector3 | null;
@@ -129,8 +143,12 @@ export class FieldPhysics {
     return this.currentMode;
   }
 
-  /** Starts the simulation; resolves false if it was switched off again while Havok loaded. */
-  async enable(cubes: PhysicsCube[], mode: FieldPhysicsMode): Promise<boolean> {
+  /**
+   * Starts the simulation; resolves false if it was switched off again while
+   * Havok loaded. `cubes` is read once Havok is ready, so sizes that changed
+   * during the load (images learning their aspect) are current.
+   */
+  async enable(cubes: () => PhysicsCube[], mode: FieldPhysicsMode): Promise<boolean> {
     const generation = ++this.enableGeneration;
     const havok = await loadHavok();
     if (generation !== this.enableGeneration) return false;
@@ -143,7 +161,7 @@ export class FieldPhysics {
     }
     this.currentMode = mode;
     this.steering = mode === 'anchor';
-    this.attach(cubes);
+    this.attach(cubes());
     return true;
   }
 
@@ -183,12 +201,40 @@ export class FieldPhysics {
       if (!cube.mesh.isEnabled()) return;
       const created = this.createBody(cube);
       minY = Math.min(minY, created.node.position.y);
+      if (cube.companion) {
+        minY = Math.min(minY, Vector3.TransformCoordinatesToRef(cube.companion.mesh.position, this.rootMatrix, this.tmpVector).y);
+      }
       this.applyGravity(created);
       this.bodies.set(cube, created);
     });
     const half = this.config.cubeSize / 2;
     this.groundY = Math.min(this.config.physicsGroundHeight, Number.isFinite(minY) ? minY - half * 2 : 0);
     this.createGround();
+  }
+
+  /**
+   * The cube's size changed (an image tile learnt its aspect ratio): its body
+   * is rebuilt at its current pose, keeping its motion.
+   */
+  refreshBody(cube: PhysicsCube): void {
+    const entry = this.bodies.get(cube);
+    if (!entry || !this.engine) return;
+    this.updateRootMatrices();
+    const linear = entry.body.getLinearVelocity();
+    const angular = entry.body.getAngularVelocity();
+    const motion = entry.motion;
+    const { target, heldRotation, liftOrigin } = entry;
+    this.disposeEntry(entry);
+    const created = this.createBody(cube);
+    Object.assign(created, { target, heldRotation, liftOrigin });
+    this.applyGravity(created);
+    this.bodies.set(cube, created);
+    if (motion !== PhysicsMotionType.DYNAMIC) {
+      this.setMotion(created, motion);
+    } else {
+      created.body.setLinearVelocity(linear);
+      created.body.setAngularVelocity(angular);
+    }
   }
 
   /** Ground height in world space (for screen-ray drag planes). */
@@ -338,19 +384,36 @@ export class FieldPhysics {
     node.rotationQuaternion = new Quaternion();
     this.bodyMatrix.decompose(this.tmpScale, node.rotationQuaternion, node.position);
 
-    // Root scaling (field global scale) folds into the box size; bodies stay unscaled.
+    const box = this.createBox(mesh);
+    const shapes: PhysicsShape[] = [box];
+    let shape: PhysicsShape = box;
+    if (cube.companion) {
+      // One body, two boxes: the pair falls, tips and is thrown as one piece.
+      const companionBox = this.createBox(cube.companion.mesh);
+      const container = new PhysicsShapeContainer(this.scene);
+      container.addChild(box);
+      container.addChild(companionBox, cube.companion.offset.scale(Math.abs(this.root.scaling.x)));
+      shapes.push(companionBox, container);
+      shape = container;
+    }
+    const body = new PhysicsBody(node, PhysicsMotionType.DYNAMIC, false, this.scene);
+    body.shape = shape;
+    // Mass 1 per piece; the centre of mass follows the shapes.
+    body.setMassProperties({ mass: cube.companion ? 2 : 1 });
+    return { node, body, shapes, motion: PhysicsMotionType.DYNAMIC, target: null, heldRotation: null, liftOrigin: null };
+  }
+
+  /** Box of a (scaled) unit-cube mesh; root scaling (field global scale) folds into the size, bodies stay unscaled. */
+  private createBox(mesh: Mesh): PhysicsShapeBox {
     const rootScale = this.root.scaling;
     const extents = new Vector3(
       this.config.cubeSize * Math.abs(mesh.scaling.x * rootScale.x),
       this.config.cubeSize * Math.abs(mesh.scaling.y * rootScale.y),
       this.config.cubeSize * Math.abs(mesh.scaling.z * rootScale.z),
     );
-    const shape = new PhysicsShapeBox(Vector3.Zero(), Quaternion.Identity(), extents, this.scene);
-    shape.material = { friction: 0.6, restitution: 0.2 };
-    const body = new PhysicsBody(node, PhysicsMotionType.DYNAMIC, false, this.scene);
-    body.shape = shape;
-    body.setMassProperties({ mass: 1 });
-    return { node, body, shape, motion: PhysicsMotionType.DYNAMIC, target: null, heldRotation: null, liftOrigin: null };
+    const box = new PhysicsShapeBox(Vector3.Zero(), Quaternion.Identity(), extents, this.scene);
+    box.material = { friction: 0.6, restitution: 0.2 };
+    return box;
   }
 
   private createGround(): void {
@@ -379,12 +442,16 @@ export class FieldPhysics {
 
   private disposeBodies(): void {
     this.bodies.forEach((entry, cube) => {
-      entry.body.dispose();
-      entry.shape.dispose();
-      entry.node.dispose();
+      this.disposeEntry(entry);
       cube.isBeingDragged = false;
     });
     this.bodies.clear();
+  }
+
+  private disposeEntry(entry: CubeBody): void {
+    entry.body.dispose();
+    entry.shapes.forEach((shape) => shape.dispose());
+    entry.node.dispose();
   }
 
   private setMotion(entry: CubeBody, motion: PhysicsMotionType): void {
@@ -418,6 +485,10 @@ export class FieldPhysics {
     this.bodies.forEach((_entry, cube) => {
       const y = Vector3.TransformCoordinatesToRef(cube.basePosition, this.rootMatrix, this.tmpVector).y;
       if (y < lowest) lowest = y;
+      if (cube.companion) {
+        const companionY = Vector3.TransformCoordinatesToRef(cube.companion.basePosition, this.rootMatrix, this.tmpVector).y;
+        if (companionY < lowest) lowest = companionY;
+      }
     });
     if (!Number.isFinite(lowest)) return;
     const restOnGround = this.groundY + this.config.cubeSize * LIFT_CLEARANCE_FACTOR;
@@ -465,6 +536,14 @@ export class FieldPhysics {
       this.localMatrix.decompose(this.tmpScale, this.tmpQuat, this.tmpPosition);
       mesh.position.copyFrom(this.tmpPosition);
       mesh.rotationQuaternion.copyFrom(this.tmpQuat);
+      const companion = cube.companion;
+      if (companion) {
+        const companionMesh = companion.mesh;
+        companionMesh.rotationQuaternion ??= new Quaternion();
+        companionMesh.rotationQuaternion.copyFrom(this.tmpQuat);
+        companion.offset.rotateByQuaternionToRef(this.tmpQuat, companionMesh.position);
+        companionMesh.position.addInPlace(this.tmpPosition);
+      }
     });
   }
 

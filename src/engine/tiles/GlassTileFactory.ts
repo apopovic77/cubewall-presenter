@@ -61,7 +61,7 @@ export class GlassTileFactory {
       descriptors.push(imageDescriptor);
 
       if (includeCaptions) {
-        const textDescriptor = await this.createGlassDescriptor(item, imageDescriptor.footprint.height, buildContext);
+        const textDescriptor = await this.createGlassDescriptor(item, buildContext);
         if (textDescriptor) {
           descriptors.push(textDescriptor);
         }
@@ -79,7 +79,6 @@ export class GlassTileFactory {
       textTileWidth: tiles.text.tileWidth,
       textTileThickness: tiles.text.thickness,
       imageTileThickness: tiles.image.thickness,
-      verticalGap: tiles.text.verticalGap,
     };
   }
 
@@ -98,7 +97,6 @@ export class GlassTileFactory {
       stacking: {
         groupId: item.id,
         role: 'leader',
-        yOffset: 0,
         inheritAnchorPosition: false,
         affectsMasonryFlow: true,
       },
@@ -108,7 +106,7 @@ export class GlassTileFactory {
     };
   }
 
-  private async createGlassDescriptor(item: CubeContentItem, imageHeight: number, context: TileBuildContext): Promise<TileDescriptor | null> {
+  private async createGlassDescriptor(item: CubeContentItem, context: TileBuildContext): Promise<TileDescriptor | null> {
     const textContent = this.composeContent(item);
     if (!textContent.html) {
       return null;
@@ -142,7 +140,7 @@ export class GlassTileFactory {
     }
 
     if (!renderResult) {
-      const fallback = this.createFallbackTextDescriptor(item, imageHeight, context, textContent);
+      const fallback = this.createFallbackTextDescriptor(item, context, textContent);
       if (!fallback) {
         return null;
       }
@@ -153,7 +151,6 @@ export class GlassTileFactory {
     const width = context.textTileWidth;
     const height = width / aspect;
     const depth = context.textTileThickness;
-    const gap = context.verticalGap;
 
     const footprint: TileFootprint = {
       width,
@@ -177,7 +174,6 @@ export class GlassTileFactory {
       stacking: {
         groupId: item.id,
         role: 'follower',
-        yOffset: -(imageHeight / 2 + gap + height / 2),
         inheritAnchorPosition: true,
         affectsMasonryFlow: false,
       },
@@ -232,7 +228,6 @@ export class GlassTileFactory {
 
   private createFallbackTextDescriptor(
     item: CubeContentItem,
-    imageHeight: number,
     context: TileBuildContext,
     content: { meta: string | null; headline: string | null; summary: string | null },
   ): TileDescriptor | null {
@@ -331,7 +326,6 @@ export class GlassTileFactory {
     const width = context.textTileWidth;
     const height = width / aspect;
     const depth = context.textTileThickness;
-    const gap = context.verticalGap;
 
     const footprint: TileFootprint = {
       width,
@@ -355,7 +349,6 @@ export class GlassTileFactory {
       stacking: {
         groupId: item.id,
         role: 'follower',
-        yOffset: -(imageHeight / 2 + gap + height / 2),
         inheritAnchorPosition: true,
         affectsMasonryFlow: false,
       },
