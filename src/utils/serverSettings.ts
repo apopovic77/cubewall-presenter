@@ -1,5 +1,5 @@
 import type { PresenterSettings } from '../config/PresenterSettings';
-import { STRESS_GRID_SIZE } from '../config/stressTest';
+import { HAS_SESSION_OVERRIDES } from '../config/sessionOverrides';
 
 function resolveSettingsEndpoint(): string {
   const explicitEndpoint = import.meta.env.VITE_SETTINGS_API_URL;
@@ -16,10 +16,10 @@ function resolveSettingsEndpoint(): string {
  * settings endpoint was configured explicitly (e.g. a local settings server).
  */
 const IS_DEBUG_SESSION = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
-/** `?debug` sessions (automated regression runs, inspection) and `?cubes=` load tests never write the shared store either. */
+/** `?debug` sessions (automated regression runs, inspection) and sessions with URL overrides (`?cubes=`, `?layout=` …) never write the shared store either. */
 const CAN_WRITE_SETTINGS =
   !IS_DEBUG_SESSION &&
-  STRESS_GRID_SIZE === null && (!import.meta.env.DEV || Boolean(import.meta.env.VITE_SETTINGS_API_URL));
+  !HAS_SESSION_OVERRIDES && (!import.meta.env.DEV || Boolean(import.meta.env.VITE_SETTINGS_API_URL));
 
 const SAVE_DEBOUNCE_MS = 800;
 const SETTINGS_TOKEN_STORAGE_KEY = 'cwSettingsToken';

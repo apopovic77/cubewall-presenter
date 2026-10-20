@@ -40,6 +40,20 @@ See [`docs/architecture.md`](docs/architecture.md) (class diagram, folder respon
 
 Behaviour-preserving changes are verified with a headless run against `vite preview` with `?debug` (exposes the presenter as `window.__cubewall`; a `?debug` session never writes the shared settings store): load, click and next-cube selection, morph without physics, physics drop / anchor with morph, wave toggle, axis layout, masonry tiles and back to cubes, textures loaded. Run it with `npm run build && npx vite preview --port 4179 &` and `npm run regression` (`tools/regression.mjs`, Chrome path via `CHROME_PATH`). It uses the real GPU (`--use-angle=metal`); the software GPU renders a few frames per second and stretches every time-based step.
 
+## URL overrides
+
+A session can be set up from the URL without touching the kiosks: with any of these parameters it writes neither the shared settings store nor the settings cookie (`src/config/sessionOverrides.ts`).
+
+| Parameter | Effect |
+|---|---|
+| `layout=masonry\|grid\|axis` | start layout (masonry switches to tiles) |
+| `captions=1\|0` | glass caption tiles under the image tiles |
+| `wave=0\|1` | wave motion (position and rotation) |
+| `physics=classic\|anchor` | physics mode once the first content is laid out |
+| `cubes=N` | load test, see below |
+
+Example: `?layout=masonry&captions=1&wave=0&physics=classic`.
+
 ## Load test
 
 `?cubes=10000` builds a square grid with at least that many cubes (up to 150 × 150 = 22 500), repeats the content so every cube shows an image, and starts with an overview camera (no fly-to on selection). Such a session writes neither the shared settings store nor the settings cookie. Measured on an M4 (Chrome, no physics): about 6 400 cubes at 60 fps, 10 000 at roughly 35 fps; the CPU sync of the instance matrices is the limit, not the GPU.

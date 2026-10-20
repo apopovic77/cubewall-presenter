@@ -24,7 +24,15 @@ import { loadCubeContent, resolveContentProviderId } from './content/registry';
 import { ArButton } from './components/ArButton';
 import type { ArMenuAction, ArMenuState, ArPhysicsMode } from './engine/xr/menu/ArMenuModel';
 import { mapUvLayout } from './config/applySettingsToConfig';
-import { STRESS_GRID_SIZE, stressCameraRadius } from './config/stressTest';
+import {
+  HAS_SESSION_OVERRIDES,
+  SESSION_CAPTIONS,
+  SESSION_LAYOUT,
+  SESSION_PHYSICS,
+  SESSION_WAVE,
+  STRESS_GRID_SIZE,
+  stressCameraRadius,
+} from './config/sessionOverrides';
 
 const SETTINGS_COOKIE_KEY = 'cwPresenterSettings';
 const CONTENT_RETRY_DELAY_MS = 30_000;
@@ -191,6 +199,38 @@ function cloneBillboardState(state: BillboardDisplayState | null): BillboardDisp
   };
 }
 
+const SESSION_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> | null =
+  SESSION_LAYOUT === 'masonry'
+    ? MASONRY_LAYOUT_OVERRIDE
+    : SESSION_LAYOUT === 'axis'
+      ? AXIS_LAYOUT_OVERRIDE
+      : SESSION_LAYOUT === 'matrix'
+        ? MATRIX_LAYOUT_OVERRIDE
+        : null;
+
+/** URL overrides on top of the loaded settings (see config/sessionOverrides.ts). */
+function applySessionOverrides(loaded: PresenterSettings): PresenterSettings {
+  const next = { ...loaded };
+  if (STRESS_GRID_SIZE !== null) {
+    // Overview of the whole field: no fly-to on selections.
+    next.gridSize = STRESS_GRID_SIZE;
+    next.cameraRadius = stressCameraRadius(appConfig.camera.radius, STRESS_GRID_SIZE);
+    next.selectionCameraFollowEnabled = false;
+    next.autoSelectEnabled = false;
+  }
+  if (SESSION_LAYOUT === 'masonry') {
+    // Row / column labels belong to the time axis, not to a tile wall.
+    next.geometryMode = 'tile';
+    next.axisLabelsEnabled = false;
+  }
+  if (SESSION_CAPTIONS !== null) next.tileCaptionsEnabled = SESSION_CAPTIONS;
+  if (SESSION_WAVE !== null) {
+    next.wavePositionEnabled = SESSION_WAVE;
+    next.waveRotationEnabled = SESSION_WAVE;
+  }
+  return next;
+}
+
 async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
   if (ENABLE_SERVER_SETTINGS) {
     const serverSettings = await loadServerSettings();
@@ -224,9 +264,11 @@ export default function App() {
   const contentLayoutRef = useRef<Partial<CubeLayoutConfig> | null>(null);
   const settingsRef = useRef<PresenterSettings | null>(null);
   const refreshControllerRef = useRef<AbortController | null>(null);
-  const layoutOverrideRef = useRef<Partial<CubeLayoutConfig> | null>(null);
+  const layoutOverrideRef = useRef<Partial<CubeLayoutConfig> | null>(SESSION_LAYOUT_OVERRIDE);
+  // `?physics=` is switched on once, after the first content is laid out.
+  const pendingSessionPhysicsRef = useRef(SESSION_PHYSICS);
   const preloadDataRef = useRef(window.__cubewallPreload ?? null);
-  const [layoutOverride, setLayoutOverride] = useState<Partial<CubeLayoutConfig> | null>(null);
+  const [layoutOverride, setLayoutOverride] = useState<Partial<CubeLayoutConfig> | null>(SESSION_LAYOUT_OVERRIDE);
   const [contentStats, setContentStats] = useState<{ itemCount: number; lastRefreshIso: string | null }>({
     itemCount: 0,
     lastRefreshIso: null,
@@ -270,17 +312,7 @@ export default function App() {
       console.info('[CubeWallInit] Loading initial presenter settings …');
       const { settings: loaded, fromServer } = await loadInitialSettingsAsync();
       if (disposed) return;
-      const initial =
-        STRESS_GRID_SIZE === null
-          ? loaded
-          : {
-              ...loaded,
-              // Overview of the whole field: no fly-to on selections.
-              gridSize: STRESS_GRID_SIZE,
-              cameraRadius: stressCameraRadius(appConfig.camera.radius, STRESS_GRID_SIZE),
-              selectionCameraFollowEnabled: false,
-              autoSelectEnabled: false,
-            };
+      const initial = applySessionOverrides(loaded);
       initialSourceRef.current = fromServer ? 'server' : 'cookie';
       setSettings(initial);
       console.info('[CubeWallInit] Initial settings ready.', { fromServer });
@@ -321,6 +353,15 @@ export default function App() {
         layout: mergeLayoutConfig(combinedLayoutOverrides),
       });
       console.info('[CubeWallInit] Content forwarded to presenter.');
+      const sessionPhysics = pendingSessionPhysicsRef.current;
+      if (sessionPhysics && items.length > 0 && presenter.getPhysicsMode() === 'off') {
+        pendingSessionPhysicsRef.current = null;
+        // The physics cycle runs off -> classic -> anchor.
+        await presenter.triggerPhysicsDrop();
+        if (sessionPhysics === 'anchor') await presenter.triggerPhysicsDrop();
+        presenter.refreshArMenu();
+        setPhysicsMode(presenter.getPhysicsMode());
+      }
     },
     [contentProviderId, enableBaseFallbackTextures, enablePicsumFallbacks],
   );
@@ -646,8 +687,8 @@ export default function App() {
 
   useEffect(() => {
     if (!settings) return;
-    // A `?cubes=` load test keeps its oversized grid out of the cookie too.
-    if (STRESS_GRID_SIZE === null) setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
+    // A session with URL overrides keeps them out of the cookie too.
+    if (!HAS_SESSION_OVERRIDES) setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
     // Only write back when the session started from the server's settings; a
     // session that fell back to cookie/defaults must not overwrite the shared store.
     const shouldPersist = hasPersistedRef.current && initialSourceRef.current === 'server';

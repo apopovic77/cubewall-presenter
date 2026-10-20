@@ -1,6 +1,6 @@
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { ActivationFrontMode } from '../engine/transition/ActivationFront';
-import { STRESS_GRID_SIZE, stressCameraRadius } from './stressTest';
+import { STRESS_GRID_SIZE, stressCameraRadius } from './sessionOverrides';
 
 export type BackgroundType = 'solid' | 'gradient';
 export type DepthOfFieldBlurLevel = 'low' | 'medium' | 'high';
