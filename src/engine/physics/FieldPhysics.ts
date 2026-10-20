@@ -47,6 +47,8 @@ const SETTLED_DISTANCE_FACTOR = 0.25;
 const SETTLED_SPEED = 1;
 /** at the latest this long after the cross-fade ended (jammed cubes must not hover forever). */
 const SETTLE_TIMEOUT_MS = 20_000;
+/** Lowest cube centre of a lifted shape: half a cube plus a little air above the ground. */
+const LIFT_CLEARANCE_FACTOR = 0.6;
 /** Share of the steering velocity a cube keeps when a morph releases it in classic mode. */
 const RELEASE_DAMPING = 0.15;
 
@@ -101,6 +103,8 @@ export class FieldPhysics {
   private pullUntilSettled = false;
   private pullSettleDeadline = Number.POSITIVE_INFINITY;
   private lastSettledShare = 0;
+  /** Upward offset of the layout attractor so shapes reaching below the ground stand on it. */
+  private layoutLift = 0;
   // Scratch values (no per-frame allocations in the hot loops).
   private readonly rootMatrix = new Matrix();
   private readonly rootInverse = new Matrix();
@@ -221,6 +225,7 @@ export class FieldPhysics {
       }
     }
     const steerToLayout = this.currentMode === 'anchor' || this.pullUntilSettled;
+    if (steerToLayout) this.updateLayoutLift(follow);
     let settled = 0;
     let steered = 0;
     if (steerToLayout !== this.steering) {
@@ -402,9 +407,28 @@ export class FieldPhysics {
   }
 
   /** Anchor mode: velocity spring towards the cube's layout pose, so cubes flow into the new form and still collide. */
+  /**
+   * Shapes centred on the field (sphere, helix, spiral) reach far below the
+   * ground the flat grid rests on; without a lift their lower half is pressed
+   * flat onto it. The attractor is raised (smoothly) until the lowest target
+   * stands on the ground.
+   */
+  private updateLayoutLift(follow: number): void {
+    let lowest = Number.POSITIVE_INFINITY;
+    this.bodies.forEach((_entry, cube) => {
+      const y = Vector3.TransformCoordinatesToRef(cube.basePosition, this.rootMatrix, this.tmpVector).y;
+      if (y < lowest) lowest = y;
+    });
+    if (!Number.isFinite(lowest)) return;
+    const restOnGround = this.groundY + this.config.cubeSize * LIFT_CLEARANCE_FACTOR;
+    const desired = Math.max(0, restOnGround - lowest);
+    this.layoutLift += (desired - this.layoutLift) * follow;
+  }
+
   /** Returns true when the cube is at its place and nearly at rest. */
   private steerToLayout(cube: PhysicsCube, entry: CubeBody): boolean {
     const target = Vector3.TransformCoordinatesToRef(cube.basePosition, this.rootMatrix, this.tmpPosition);
+    target.y += this.layoutLift;
     const offset = target.subtract(entry.node.position);
     const atPlace =
       offset.length() < this.config.cubeSize * SETTLED_DISTANCE_FACTOR &&
@@ -446,6 +470,7 @@ export class FieldPhysics {
 
   private respawn(cube: PhysicsCube, entry: CubeBody): void {
     const target = Vector3.TransformCoordinates(cube.basePosition, this.rootMatrix);
+    target.y += this.layoutLift;
     target.y = Math.max(target.y, this.groundY + this.config.cubeSize * 4);
     entry.body.disablePreStep = false;
     entry.node.position.copyFrom(target);
