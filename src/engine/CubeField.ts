@@ -1037,8 +1037,11 @@ export class CubeField {
         return;
       }
 
-      const key = `${cube.gridX},${cube.gridZ}`;
-      const item = assignments.get(key) ?? null;
+      // Tiles carry their own item (the grid grew past gridSize to fit the captions,
+      // so the cell assignment would leave the outer image tiles empty and split pairs).
+      const item = descriptor
+        ? (contentLookup.get(descriptor.contentId) ?? null)
+        : (assignments.get(`${cube.gridX},${cube.gridZ}`) ?? null);
 
       cube.content = item ?? null;
 
