@@ -34,14 +34,16 @@ async function readSettings() {
   }
 }
 
-// Writes are serialized and atomic (temp file + rename), so concurrent PUTs or a
+// Writes are serialized and atomic (temp file + rename), so concurrent writes or a
 // crash mid-write can never leave a truncated settings.json behind.
 let writeQueue = Promise.resolve();
 
-function writeSettings(settings) {
+/** Merges `changes` into the stored settings (read and write inside the queue). */
+function mergeSettings(changes) {
   const run = async () => {
+    const merged = { ...(await readSettings()), ...changes };
     const tmpFile = `${DATA_FILE}.${process.pid}.tmp`;
-    await fs.writeFile(tmpFile, JSON.stringify(settings, null, 2), 'utf8');
+    await fs.writeFile(tmpFile, JSON.stringify(merged, null, 2), 'utf8');
     await fs.rename(tmpFile, DATA_FILE);
   };
   writeQueue = writeQueue.then(run, run);
@@ -56,24 +58,32 @@ app.get('/settings', async (req, res) => {
   res.json(await readSettings());
 });
 
-app.put('/settings', async (req, res) => {
+// Clients send only the keys they changed, so a browser tab can never write back
+// values it merely loaded (e.g. a tab left open across a release or a settings change).
+app.patch('/settings', async (req, res) => {
   if (WRITE_TOKEN && req.get('X-Settings-Token') !== WRITE_TOKEN) {
     res.status(401).json({ error: 'invalid_token' });
     return;
   }
-  const incoming = req.body;
-  if (!isPlainObject(incoming)) {
+  const changes = req.body;
+  if (!isPlainObject(changes)) {
     res.status(400).json({ error: 'settings_must_be_object' });
     return;
   }
   try {
-    await writeSettings(incoming);
-    console.log('[SettingsServer] Settings updated');
+    await mergeSettings(changes);
+    console.log(`[SettingsServer] Settings updated: ${Object.keys(changes).join(', ')}`);
     res.status(204).send();
   } catch (error) {
     console.error('[SettingsServer] Failed to write settings.', error);
     res.status(500).json({ error: 'write_failed' });
   }
+});
+
+// Whole-object writes came from clients before the PATCH protocol; they would
+// overwrite every other change with that tab's stale copy.
+app.put('/settings', (req, res) => {
+  res.status(410).json({ error: 'client_outdated', hint: 'reload the page' });
 });
 
 const PORT = process.env.PORT ?? 5001;

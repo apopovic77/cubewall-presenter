@@ -7,6 +7,10 @@ import { Axis3DLabelManager, type AxisLabelData } from '../Axis3DLabelManager';
 import type { AxisLabelDisplayState } from '../CubeWallPresenter';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Rough size of an overlay label pill (index.css .cw-axis-label) for overlap culling.
+const LABEL_CHAR_WIDTH_PX = 7;
+const LABEL_PADDING_PX = 26;
+const LABEL_HEIGHT_PX = 24;
 
 /**
  * Labels along the field's rows / columns (e.g. publishing days): as screen
@@ -128,14 +132,12 @@ export class AxisLabelController {
     return '';
   }
 
+  /** Number of items on that axis line, e.g. "18.10.2026. · 25". */
   private formatPlusSuffix(count: number): string {
     if (!Number.isFinite(count) || count <= 0) {
       return '';
     }
-    const capped = Math.min(count, 12);
-    const icons = Array.from({ length: capped }, () => '(+)').join('');
-    const overflow = count > capped ? ` (+${count - capped})` : '';
-    return `  ${icons}${overflow}`;
+    return ` · ${count}`;
   }
 
   private getAxisLabelAxes(): AxisLabelAxis[] {
@@ -160,7 +162,9 @@ export class AxisLabelController {
   }
 
   private computeAxisLabelData(): AxisLabelData[] {
-    if (!this.config.axisLabels.enabled) {
+    // Rows and columns carry the axis values only in cube mode; tile layouts
+    // place the tiles by index, so a row label would point at unrelated tiles.
+    if (!this.config.axisLabels.enabled || this.config.geometryMode === 'tile') {
       return [];
     }
 
@@ -272,7 +276,7 @@ export class AxisLabelController {
     const viewport = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
     const rect = canvas.getBoundingClientRect();
 
-    const labels: AxisLabelDisplayState[] = [];
+    const candidates: (AxisLabelDisplayState & { depth: number })[] = [];
 
     data.forEach((label) => {
       const projected = Vector3.Project(label.worldPosition, Matrix.Identity(), transform, viewport);
@@ -284,17 +288,45 @@ export class AxisLabelController {
       if (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1) {
         return;
       }
-      labels.push({
+      candidates.push({
         id: label.id,
         label: label.text,
         axis: label.axis,
         screenX: rect.left + normalizedX * rect.width,
         screenY: rect.top + normalizedY * rect.height,
+        depth: projected.z,
       });
     });
 
-    this.onLabelsChange(labels);
+    this.onLabelsChange(this.withoutOverlaps(candidates));
     this.dirty = false;
+  }
+
+  /**
+   * Seen along an axis the anchors line up on screen and the labels would pile
+   * up; nearer labels win, any label overlapping one already kept is left out.
+   */
+  private withoutOverlaps(candidates: (AxisLabelDisplayState & { depth: number })[]): AxisLabelDisplayState[] {
+    const kept: { state: AxisLabelDisplayState; halfWidth: number }[] = [];
+    [...candidates]
+      .sort((a, b) => a.depth - b.depth)
+      .forEach((candidate) => {
+        const state: AxisLabelDisplayState = {
+          id: candidate.id,
+          label: candidate.label,
+          axis: candidate.axis,
+          screenX: candidate.screenX,
+          screenY: candidate.screenY,
+        };
+        const halfWidth = (state.label.length * LABEL_CHAR_WIDTH_PX + LABEL_PADDING_PX) / 2;
+        const overlaps = kept.some(
+          (other) =>
+            Math.abs(other.state.screenY - state.screenY) < LABEL_HEIGHT_PX &&
+            Math.abs(other.state.screenX - state.screenX) < other.halfWidth + halfWidth,
+        );
+        if (!overlaps) kept.push({ state, halfWidth });
+      });
+    return kept.map((entry) => entry.state);
   }
 
   public update3DLabels(): void {

@@ -643,7 +643,8 @@ body {
 
 .cw-axis-label {
   position: absolute;
-  transform: translate(-125%, -50%) scale(-1, -1);
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
   transform-origin: center;
   background: rgba(248, 249, 252, 0.88);
   border: 1px solid rgba(0, 0, 0, 0.12);

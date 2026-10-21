@@ -22,9 +22,9 @@ The eventcrawler project is `VITE_EVENTCRAWLER_PROJECT_SLUG` (default `default` 
 
 - CORS is limited to `ALLOWED_ORIGINS` (default: production origin and `http://localhost:5173`).
 - When `SETTINGS_WRITE_TOKEN` is set, writes need the header `X-Settings-Token`. The client sends the value stored in `localStorage['cwSettingsToken']`.
-- Writes are serialized and atomic.
+- Writes are serialized and atomic. Clients `PATCH` only the keys they changed, which the server merges; a whole-object `PUT` (clients before 2026-10-21) is refused with `410`, so a tab left open with an old copy can no longer overwrite the store.
 - The client writes debounced (800 ms), and only if the session started from the server's settings. Dev sessions (`npm run dev`) read production settings but never write them unless `VITE_SETTINGS_API_URL` points to another store.
-- **Start view vs. session:** the settings panel (F1) writes the store, including the view every kiosk starts with: *Start Layout* (content source default / grid / masonry / timeline) and *Geometry Mode (start)*. The control panel's layout buttons (4, 5, F4), cubes ↔ tiles (1) and the label toggle (L) only change the running session and are never saved. Selecting a cube moves the camera to it; deselecting leaves the camera where it is, *Übersicht* (H / Home) returns to the overview.
+- **Start view vs. session:** the settings panel (F1) writes the store, including the view every kiosk starts with: *Start Layout* (content source default / grid / masonry / timeline) and *Geometry Mode (start)*. The control panel's layout buttons (4, 5, F4), cubes ↔ tiles (1) and the label toggle (L) only change the running session and are never saved. Axis labels (L) show the day and the item count per row in cube mode; tile layouts have no day rows, so they show none. Selecting a cube moves the camera to it; deselecting leaves the camera where it is, *Übersicht* (H / Home) returns to the overview.
 
 ## Rendering, physics, AR
 
