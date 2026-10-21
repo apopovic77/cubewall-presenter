@@ -118,7 +118,8 @@ export class HtmlTextureRenderer {
     try {
       const textureContext = texture.getContext();
       textureContext.drawImage(canvas, 0, 0, width, height);
-      texture.update(false, true);
+      // invertY like the loaded image textures, so captions read the same way up.
+      texture.update(true, true);
     } catch (error) {
       texture.dispose();
       canvas.width = canvas.height = 0;

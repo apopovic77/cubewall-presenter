@@ -15,9 +15,9 @@ export interface TileGroupLink {
  * below the image in the image's own frame (so it turns with it), and physics
  * simulates the pair as one body.
  *
- * Offsets are along the tiles' local -Y (their height axis), unscaled, in root
- * units: upright tiles stand the caption below the image, flat ones lay it
- * next to it in the plane.
+ * Offsets are along the tiles' local +Y (their height axis; image textures
+ * are applied with invertY, so +Y is "down" in the picture), unscaled, in root
+ * units: the caption sits under the image as the picture reads.
  */
 export class TileGroups {
   public links: TileGroupLink[] = [];
@@ -80,13 +80,13 @@ export class TileGroups {
     const leaderHeight = this.height(link.leader);
     const followerHeight = this.height(link.follower);
     const gap = this.gap();
-    leaderOut.set(0, (gap + followerHeight) / 2, 0);
-    followerOut.set(0, -(leaderHeight + gap) / 2, 0);
+    leaderOut.set(0, -(gap + followerHeight) / 2, 0);
+    followerOut.set(0, (leaderHeight + gap) / 2, 0);
   }
 
   /** Follower centre relative to the leader centre, in the leader's local frame. */
   public followerOffsetToRef(link: TileGroupLink, out: Vector3): Vector3 {
-    return out.set(0, -(this.height(link.leader) / 2 + this.gap() + this.height(link.follower) / 2), 0);
+    return out.set(0, this.height(link.leader) / 2 + this.gap() + this.height(link.follower) / 2, 0);
   }
 
   /**

@@ -320,7 +320,7 @@ export class GlassTileFactory {
       textureCtx.fillText(line.text, padding, y + line.lineHeight * 0.8);
       y += line.lineHeight;
     });
-    texture.update(false, true);
+    texture.update(true, true); // invertY like the image textures
 
     const aspect = pixelWidth / totalHeight;
     const width = context.textTileWidth;
