@@ -351,14 +351,23 @@ export function SettingsPanel({ isOpen, settings, onChange, onClose, position, o
               </select>
             </label>
             <label className="cw-settings__toggle">
-              <span>Geometry Mode</span>
+              <span>Start Layout</span>
+              <select
+                value={settings.startLayout}
+                onChange={(event) => onChange({ startLayout: event.target.value as PresenterSettings['startLayout'] })}
+              >
+                <option value="provider">Content source default</option>
+                <option value="matrix">Grid</option>
+                <option value="masonry">Masonry (tiles)</option>
+                <option value="axis">Timeline</option>
+              </select>
+            </label>
+            <label className="cw-settings__toggle">
+              <span>Geometry Mode (start)</span>
               <select
                 value={settings.geometryMode}
                 onChange={(event) =>
-                  onChange({
-                    geometryMode: event.target.value as PresenterSettings['geometryMode'],
-                    _internalAllowGeometryModeChange: true,
-                  } as Partial<PresenterSettings>)
+                  onChange({ geometryMode: event.target.value as PresenterSettings['geometryMode'] })
                 }
               >
                 <option value="cube">Cubes</option>

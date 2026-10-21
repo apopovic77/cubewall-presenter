@@ -24,6 +24,7 @@ The eventcrawler project is `VITE_EVENTCRAWLER_PROJECT_SLUG` (default `default` 
 - When `SETTINGS_WRITE_TOKEN` is set, writes need the header `X-Settings-Token`. The client sends the value stored in `localStorage['cwSettingsToken']`.
 - Writes are serialized and atomic.
 - The client writes debounced (800 ms), and only if the session started from the server's settings. Dev sessions (`npm run dev`) read production settings but never write them unless `VITE_SETTINGS_API_URL` points to another store.
+- **Start view vs. session:** the settings panel (F1) writes the store, including the view every kiosk starts with: *Start Layout* (content source default / grid / masonry / timeline) and *Geometry Mode (start)*. The control panel's layout buttons (4, 5, F4), cubes ↔ tiles (1) and the label toggle (L) only change the running session and are never saved. Selecting a cube moves the camera to it; deselecting leaves the camera where it is, *Übersicht* (H / Home) returns to the overview.
 
 ## Rendering, physics, AR
 

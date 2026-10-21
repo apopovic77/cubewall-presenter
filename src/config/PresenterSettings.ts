@@ -16,7 +16,17 @@ import type {
   TextureUvLayout,
 } from './AppConfig';
 
+/** Layout a fresh page load starts with; 'provider' keeps the content source's default. */
+export type StartLayout = 'provider' | 'matrix' | 'masonry' | 'axis';
+
+/**
+ * Stored settings (shared settings store, cookie). The control panel's layout,
+ * geometry and label buttons only change the running session on top of them
+ * (see `sessionOverride` in App.tsx); `startLayout` and `geometryMode` define the
+ * view every kiosk starts with.
+ */
 export interface PresenterSettings {
+  startLayout: StartLayout;
   gridSize: number;
   useFallbackImages: boolean;
   useDynamicFallbacks: boolean;
@@ -187,6 +197,7 @@ export const defaultPresenterSettings: PresenterSettings = {
   physicsSelectedRotationSpeed: appConfig.physicsSelectedRotationSpeed,
   physicsLiftSpeed: appConfig.physicsLiftSpeed,
   geometryMode: appConfig.geometryMode,
+  startLayout: 'provider',
   tileDepth: appConfig.tileDepth,
   tileAspectMode: appConfig.tileAspectMode,
   baseOrientation: appConfig.baseOrientation,

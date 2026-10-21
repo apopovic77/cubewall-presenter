@@ -8,12 +8,11 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ControlPanel, type ControlAction } from './components/ControlPanel';
 import type { CubeSelectionInfo } from './engine/CubeField';
 import type { CubeWallPresenter } from './engine/CubeWallPresenter';
-import { defaultPresenterSettings, type PresenterSettings } from './config/PresenterSettings';
+import { defaultPresenterSettings, type PresenterSettings, type StartLayout } from './config/PresenterSettings';
 import { getCookie, setCookie } from './utils/cookies';
 import {
   appConfig,
   type CubeLayoutConfig,
-  type AxisLabelsMode,
   type AxisLabelAxis,
   type GeometryMode,
 } from './config/AppConfig';
@@ -213,6 +212,25 @@ const WAVE_STEP_KEYS: Record<
   'wave-speed-down': 'waveSpeed',
 };
 
+const START_LAYOUT_PRESETS: Record<StartLayout, Partial<CubeLayoutConfig> | null> = {
+  provider: null,
+  matrix: MATRIX_LAYOUT_OVERRIDE,
+  masonry: MASONRY_LAYOUT_OVERRIDE,
+  axis: AXIS_LAYOUT_OVERRIDE,
+};
+
+/** Settings the timeline layout switches for the session (dropped again when leaving it). */
+const AXIS_SESSION_KEYS = ['axisLabelsEnabled', 'axisLabelsMode', 'axisLabelsTemplate'] as const;
+
+function withoutKeys(
+  source: Partial<PresenterSettings>,
+  keys: readonly (keyof PresenterSettings)[],
+): Partial<PresenterSettings> {
+  const next = { ...source };
+  keys.forEach((key) => delete next[key]);
+  return next;
+}
+
 const SESSION_LAYOUT_OVERRIDE: Partial<CubeLayoutConfig> | null =
   SESSION_LAYOUT === 'masonry'
     ? MASONRY_LAYOUT_OVERRIDE
@@ -261,7 +279,14 @@ async function loadInitialSettingsAsync(): Promise<InitialSettingsResult> {
 
 export default function App() {
   const [selection, setSelection] = useState<CubeSelectionInfo | null>(null);
-  const [settings, setSettings] = useState<PresenterSettings | null>(null);
+  // Stored settings: written by the settings panel, saved to the shared store.
+  const [storedSettings, setSettings] = useState<PresenterSettings | null>(null);
+  // Session-only changes from the control panel (layout, geometry, labels); never saved.
+  const [sessionOverride, setSessionOverride] = useState<Partial<PresenterSettings>>({});
+  const settings = useMemo(
+    () => (storedSettings ? { ...storedSettings, ...sessionOverride } : null),
+    [storedSettings, sessionOverride],
+  );
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [physicsMode, setPhysicsMode] = useState<ArPhysicsMode>('off');
   const [morphFront, setMorphFront] = useState<ArMenuState['frontMode']>(appConfig.morphFront);
@@ -287,12 +312,8 @@ export default function App() {
     itemCount: 0,
     lastRefreshIso: null,
   });
-  const axisLabelStateRef = useRef<{
-    enabled: boolean;
-    mode: AxisLabelsMode;
-    template: string;
-    axes: AxisLabelAxis[] | undefined;
-  } | null>(null);
+  // Label axes in use before the timeline layout took them over.
+  const axisLabelAxesRef = useRef<AxisLabelAxis[] | undefined | null>(null);
   const contentProviderId = resolveContentProviderId();
   const enablePicsumFallbacks = import.meta.env.VITE_ENABLE_PICSUM_FALLBACKS === 'true';
   const enableBaseFallbackTextures = import.meta.env.VITE_ENABLE_BASE_FALLBACK_TEXTURES !== 'false';
@@ -548,29 +569,10 @@ export default function App() {
     }
   }, [applyContentToPresenter]);
 
+  /** Settings panel: stored (and saved); a stored value replaces a session change of the same key. */
   const handleSettingsChange = useCallback((update: Partial<PresenterSettings>) => {
-    const internalUpdate = update as Partial<PresenterSettings> & {
-      _internalAllowGeometryModeChange?: boolean;
-    };
-    setSettings((prev) => {
-      if (!prev) return prev;
-      if (
-        'geometryMode' in internalUpdate &&
-        internalUpdate.geometryMode &&
-        prev.geometryMode === 'tile' &&
-        internalUpdate.geometryMode !== 'tile' &&
-        !internalUpdate._internalAllowGeometryModeChange
-      ) {
-        const { _internalAllowGeometryModeChange, geometryMode: _ignored, ...rest } = internalUpdate;
-        console.warn(
-          '[CubeWallPresenter] Prevented external geometry mode change while tile captions are active.',
-          { attemptedMode: update.geometryMode },
-        );
-        return { ...prev, ...rest };
-      }
-      const { _internalAllowGeometryModeChange, ...rest } = internalUpdate;
-      return { ...prev, ...rest };
-    });
+    setSettings((prev) => (prev ? { ...prev, ...update } : prev));
+    setSessionOverride((prev) => withoutKeys(prev, Object.keys(update) as (keyof PresenterSettings)[]));
   }, []);
 
   const handleCaptureRelativeCamera = useCallback(() => {
@@ -597,16 +599,13 @@ export default function App() {
   const toggleGeometryMode = useCallback(() => {
     const currentGeometry = settingsRef.current?.geometryMode ?? appConfig.geometryMode;
     const nextGeometry: GeometryMode = currentGeometry === 'tile' ? 'cube' : 'tile';
-    handleSettingsChange({
-      geometryMode: nextGeometry,
-      _internalAllowGeometryModeChange: true,
-    } as Partial<PresenterSettings>);
+    setSessionOverride((prev) => ({ ...prev, geometryMode: nextGeometry }));
     layoutOverrideRef.current = null;
     setLayoutOverride(null);
     console.info(
       `[CubeWallPresenter] Geometry mode set to ${nextGeometry === 'tile' ? 'tile' : 'cube'} via shortcut.`,
     );
-  }, [handleSettingsChange, setLayoutOverride]);
+  }, [setLayoutOverride]);
 
   const applyLayoutPreset = useCallback(
     (preset: Partial<CubeLayoutConfig>) => {
@@ -617,55 +616,24 @@ export default function App() {
       const nextMode = preset.mode ?? previousMode;
 
       if (nextMode === 'axis') {
-        setSettings((prev) => {
-          if (!prev) return prev;
-          if (!axisLabelStateRef.current) {
-            axisLabelStateRef.current = {
-              enabled: prev.axisLabelsEnabled,
-              mode: prev.axisLabelsMode,
-              template: prev.axisLabelsTemplate,
-              axes: appConfig.axisLabels.axes ? [...appConfig.axisLabels.axes] : undefined,
-            };
-          }
-          return {
-            ...prev,
-            axisLabelsEnabled: true,
-            axisLabelsMode: 'overlay',
-            axisLabelsTemplate: '{{value}}',
-          };
-        });
+        axisLabelAxesRef.current ??= appConfig.axisLabels.axes ? [...appConfig.axisLabels.axes] : undefined;
+        setSessionOverride((prev) => ({
+          ...prev,
+          axisLabelsEnabled: true,
+          axisLabelsMode: 'overlay',
+          axisLabelsTemplate: '{{value}}',
+        }));
         presenterRef.current?.setAxisLabelAxes(['rows']);
       } else if (previousMode === 'axis') {
-        const previous = axisLabelStateRef.current;
-        setSettings((prev) => {
-          if (!prev) return prev;
-          if (!previous) {
-            return {
-              ...prev,
-              axisLabelsEnabled: defaultPresenterSettings.axisLabelsEnabled,
-              axisLabelsMode: defaultPresenterSettings.axisLabelsMode,
-              axisLabelsTemplate: defaultPresenterSettings.axisLabelsTemplate,
-            };
-          }
-          return {
-            ...prev,
-            axisLabelsEnabled: previous.enabled,
-            axisLabelsMode: previous.mode,
-            axisLabelsTemplate: previous.template,
-          };
-        });
-        presenterRef.current?.setAxisLabelAxes(previous?.axes ?? ['rows']);
-        axisLabelStateRef.current = null;
+        // Back to the stored label settings.
+        setSessionOverride((prev) => withoutKeys(prev, AXIS_SESSION_KEYS));
+        presenterRef.current?.setAxisLabelAxes(axisLabelAxesRef.current ?? ['rows']);
+        axisLabelAxesRef.current = null;
       }
 
       const presetCopy: Partial<CubeLayoutConfig> = { ...preset };
-      if (presetCopy.mode === 'masonry') {
-        if (settingsRef.current?.geometryMode !== 'tile') {
-          handleSettingsChange({
-            geometryMode: 'tile',
-            _internalAllowGeometryModeChange: true,
-          } as Partial<PresenterSettings>);
-        }
+      if (presetCopy.mode === 'masonry' && settingsRef.current?.geometryMode !== 'tile') {
+        setSessionOverride((prev) => ({ ...prev, geometryMode: 'tile' }));
       }
       layoutOverrideRef.current = presetCopy;
       setLayoutOverride(presetCopy);
@@ -680,8 +648,17 @@ export default function App() {
         }
       }
     },
-    [applyContentToPresenter, handleSettingsChange, setLayoutOverride],
+    [applyContentToPresenter, setLayoutOverride],
   );
+
+  // The stored start layout, once the settings are loaded (a `?layout=` link wins).
+  const startLayoutAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!storedSettings || startLayoutAppliedRef.current) return;
+    startLayoutAppliedRef.current = true;
+    const preset = SESSION_LAYOUT_OVERRIDE ? null : START_LAYOUT_PRESETS[storedSettings.startLayout];
+    if (preset) applyLayoutPreset(preset);
+  }, [storedSettings, applyLayoutPreset]);
 
   // Kiosks run unattended: retry a failed load on their own.
   useEffect(() => {
@@ -700,17 +677,20 @@ export default function App() {
   const prevGeometryModeRef = useRef<GeometryMode | null>(null);
 
   useEffect(() => {
-    if (!settings) return;
+    if (!storedSettings) return;
     // A session with URL overrides keeps them out of the cookie too.
-    if (!HAS_SESSION_OVERRIDES) setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(settings));
+    if (!HAS_SESSION_OVERRIDES) setCookie(SETTINGS_COOKIE_KEY, JSON.stringify(storedSettings));
     // Only write back when the session started from the server's settings; a
     // session that fell back to cookie/defaults must not overwrite the shared store.
     const shouldPersist = hasPersistedRef.current && initialSourceRef.current === 'server';
     if (ENABLE_SERVER_SETTINGS && shouldPersist) {
-      saveServerSettings(settings);
+      saveServerSettings(storedSettings);
     }
     hasPersistedRef.current = true;
+  }, [storedSettings]);
 
+  useEffect(() => {
+    if (!settings) return;
     const prevGeometry = prevGeometryModeRef.current;
     if (prevGeometry !== null && prevGeometry !== settings.geometryMode) {
       if (presenterRef.current && contentItemsRef.current.length > 0) {
@@ -821,7 +801,10 @@ export default function App() {
           presenter?.showOverview();
           break;
         case 'labels-toggle':
-          setSettings((prev) => (prev ? { ...prev, axisLabelsEnabled: !prev.axisLabelsEnabled } : prev));
+          setSessionOverride((prev) => ({
+            ...prev,
+            axisLabelsEnabled: !(settingsRef.current?.axisLabelsEnabled ?? false),
+          }));
           break;
         case 'physics-cycle':
           void presenter?.triggerPhysicsDrop().then(() => {

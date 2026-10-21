@@ -159,8 +159,10 @@ graph LR
   Groups --> Phys["FieldPhysics<br/>one body, two boxes"]
 ```
 
-- **Layout:** the leader's layout footprint covers the whole group (image + gap + caption), so masonry packs the pair; the sampled leader position is the group centre and `placeInLayout` moves both tiles to their places around it, along the tiles' local −Y. Upright tiles stand the caption under the image; flat ones lay it next to it.
-- **Motion:** the caption's offset lives in the image's frame, so wave, selection spin and morphs turn the pair as one.
+- **Layout:** the leader's layout footprint covers the whole group (image + gap + caption), so masonry packs the pair; the sampled leader position is the group centre and `placeInLayout` moves both tiles to their places around it, along the tiles' local +Y (image textures load with invertY, so +Y is "down" in the picture; caption textures load the same way). The caption always sits under the picture as it reads.
+- **Motion:** the caption's offset lives in the image's frame, so wave, selection and morphs turn the pair as one.
+- **Content:** each image tile takes its item from its descriptor, not from the cell assignment (that only covers `gridSize²` cells, while the tile grid grows past it).
+- **Selection:** a cube lifts and spins about the field normal; a tile lifts and turns its picture face (local −Z) towards the viewer by the shortest arc. Tiles blend rotations as quaternions, because the flat base pose sits at the Euler gimbal lock.
 - **Physics:** the image's body gets a `PhysicsShapeContainer` with both boxes (`PhysicsCube.companion`); captions have no body of their own and are posed from it. Every size change goes through `CubeField.applyCellGeometry`, which rebuilds the group's body under physics (images learn their aspect ratio after loading).
 - **Caption settings:** width (relative to the image tile, `text.tileWidth / image.baseWidth`), gap and glass alpha apply live (`CubeField.applyCaptionSettings`), also under physics.
 - **Grid:** tile mode grows the grid to a cell per tile (`TileSet.requiredGridSize`); the presenter compares the settings' grid size with what it requested, not with the grown grid.
