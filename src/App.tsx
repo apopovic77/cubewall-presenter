@@ -817,6 +817,9 @@ export default function App() {
           setSettings((prev) => (prev ? { ...prev, ...stepWaveSetting(prev, key, direction) } : prev));
           break;
         }
+        case 'camera-overview':
+          presenter?.showOverview();
+          break;
         case 'labels-toggle':
           setSettings((prev) => (prev ? { ...prev, axisLabelsEnabled: !prev.axisLabelsEnabled } : prev));
           break;
@@ -880,6 +883,9 @@ export default function App() {
         ',': 'wave-speed-down',
         l: 'labels-toggle',
         L: 'labels-toggle',
+        h: 'camera-overview',
+        H: 'camera-overview',
+        Home: 'camera-overview',
       };
       const action = keyActions[event.key];
       if (action) {

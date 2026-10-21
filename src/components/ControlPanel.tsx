@@ -13,7 +13,8 @@ export type ControlAction =
   | 'wave-tilt-down'
   | 'wave-speed-up'
   | 'wave-speed-down'
-  | 'labels-toggle';
+  | 'labels-toggle'
+  | 'camera-overview';
 
 interface ControlPanelProps {
   geometryMode: 'cube' | 'tile';
@@ -105,6 +106,7 @@ export function ControlPanel({
       buttons: [
         { action: 'next-cube', label: 'Nächster Würfel', shortcut: 'N' },
         { action: 'random-cube', label: 'Zufälliger Würfel', shortcut: 'M' },
+        { action: 'camera-overview', label: 'Übersicht', shortcut: 'H' },
         { action: 'toggle-geometry', label: geometryMode === 'tile' ? 'Kacheln → Würfel' : 'Würfel → Kacheln', shortcut: '1' },
         { action: 'labels-toggle', label: labelsEnabled ? 'Labels: an' : 'Labels: aus', shortcut: 'L', active: labelsEnabled },
         { action: 'toggle-settings', label: 'Einstellungen', shortcut: 'F1' },

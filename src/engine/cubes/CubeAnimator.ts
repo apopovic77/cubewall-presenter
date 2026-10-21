@@ -1,4 +1,4 @@
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Scalar } from '@babylonjs/core/Maths/math.scalar';
 import type { CubeWallConfig } from '../../config/AppConfig';
 import type { CubeCell } from '../CubeField';
@@ -9,10 +9,21 @@ import { easeOutCubic, isSelectableCell } from './cellUtils';
  * Per-frame motion of the cubes without physics: from the layout position
  * (basePosition) plus selection lift, wave rotation and hover ripple, smoothed
  * towards the mesh pose.
+ *
+ * Selection differs by geometry: a cube lifts and spins about the field normal;
+ * a tile lifts and turns its face towards the viewer (a spin about the normal
+ * would only twist a flat tile in its own plane).
  */
 export class CubeAnimator {
   private readonly config: CubeWallConfig;
   private readonly stackOffsetScratch = new Vector3();
+  private readonly faceScratch = new Vector3();
+  private readonly normalScratch = new Vector3();
+  private readonly viewScratch = new Vector3();
+  private readonly axisScratch = new Vector3();
+  private readonly tiltScratch = new Quaternion();
+  private readonly currentQuatScratch = new Quaternion();
+  private readonly targetQuatScratch = new Quaternion();
 
   constructor(config: CubeWallConfig) {
     this.config = config;
@@ -22,6 +33,7 @@ export class CubeAnimator {
    * `normalDirection`: sign of the field's up axis (selection lifts along it).
    * `groups`: caption tiles ride rigidly on their image tile (offset in its
    * frame, so they turn with it); a leader comes before its caption in `cells`.
+   * `viewer`: camera position in the field's local frame (selected tiles face it).
    */
   public animate(
     cells: readonly CubeCell[],
@@ -29,7 +41,9 @@ export class CubeAnimator {
     sceneTime: number,
     normalDirection: number,
     groups: TileGroups,
+    viewer: Vector3 | null,
   ): void {
+    const tileMode = this.config.geometryMode === 'tile';
     const rotationWaveEnabled = this.config.waveRotationEnabled;
     // Frame-rate independent smoothing; a plain `speed * dt` overshoots on long frames.
     const interactionBlend = 1 - Math.exp(-this.config.interactionLerpSpeed * deltaTime);
@@ -68,8 +82,11 @@ export class CubeAnimator {
       }
 
       const selectionEased = easeOutCubic(cube.selectionProgress);
+      const isTile = tileMode && cube.tileDescriptor !== null;
       let selectedYRotation = 0;
-      if (cube.isSelected) {
+      if (isTile) {
+        // No spin for tiles: they turn towards the viewer below.
+      } else if (cube.isSelected) {
         if (this.config.selectionSpinEnabled) {
           cube.physicsSpinAngle += this.config.selectedCubeRotation * deltaTime;
           selectedYRotation = cube.physicsSpinAngle;
@@ -129,13 +146,51 @@ export class CubeAnimator {
       const targetRotation = cube.interactionActive ? cube.targetRotation : intendedRotation;
 
       cube.currentPosition = Vector3.Lerp(cube.currentPosition, targetPosition, interactionBlend);
-      cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, targetRotation.x, interactionBlend);
-      cube.currentRotation.y = Scalar.Lerp(cube.currentRotation.y, targetRotation.y, interactionBlend);
-      cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, targetRotation.z, interactionBlend);
+      if (isTile) {
+        this.blendTileRotation(cube, targetRotation, targetPosition, selectionEased, viewer, interactionBlend);
+      } else {
+        cube.currentRotation.x = Scalar.Lerp(cube.currentRotation.x, targetRotation.x, interactionBlend);
+        cube.currentRotation.y = Scalar.Lerp(cube.currentRotation.y, targetRotation.y, interactionBlend);
+        cube.currentRotation.z = Scalar.Lerp(cube.currentRotation.z, targetRotation.z, interactionBlend);
+      }
 
       cube.mesh.position.copyFrom(cube.currentPosition);
       cube.mesh.rotation.copyFrom(cube.currentRotation);
     });
+  }
+
+  /**
+   * Tiles blend their rotation as quaternions: the flat base pose sits at the
+   * Euler gimbal lock (pitch 90°), where per-component Euler lerps swing wildly.
+   * While selected (`facing` 0..1) the target is tilted so the picture face
+   * (local -Z, see CellGeometry.orientation) turns towards the viewer by the
+   * shortest arc, which keeps the picture upright.
+   */
+  private blendTileRotation(
+    cube: CubeCell,
+    targetRotation: Vector3,
+    position: Vector3,
+    facing: number,
+    viewer: Vector3 | null,
+    blend: number,
+  ): void {
+    const target = Quaternion.FromEulerVectorToRef(targetRotation, this.targetQuatScratch);
+    if (facing > 0 && viewer) {
+      const face = this.faceScratch.set(0, 0, -1).rotateByQuaternionToRef(target, this.normalScratch);
+      const view = viewer.subtractToRef(position, this.viewScratch);
+      if (view.lengthSquared() > 1e-6) {
+        view.normalize();
+        const angle = Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(face, view))));
+        const axis = Vector3.CrossToRef(face, view, this.axisScratch);
+        if (axis.lengthSquared() > 1e-8) {
+          Quaternion.RotationAxisToRef(axis.normalize(), angle * facing, this.tiltScratch);
+          this.tiltScratch.multiplyToRef(target, target);
+        }
+      }
+    }
+    const current = Quaternion.FromEulerVectorToRef(cube.currentRotation, this.currentQuatScratch);
+    Quaternion.SlerpToRef(current, target, blend, current);
+    current.toEulerAnglesToRef(cube.currentRotation);
   }
 
   /** Hover ripple: the centre cube and its neighbours (by grid distance) bob and tilt briefly. */

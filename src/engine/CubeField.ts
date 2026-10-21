@@ -131,9 +131,19 @@ export class CubeField {
   private readonly animator: CubeAnimator;
   private readonly tiles: TileSet;
   private readonly geometry: CellGeometry;
+  private readonly viewerMatrixScratch = new Matrix();
+  private readonly viewerScratch = new Vector3();
 
   private getNormalDirection(): number {
     return this.config.selectedCubeNormalDirection === -1 ? -1 : 1;
+  }
+
+  /** Active camera position in the field root's local frame (where the cells live), or null. */
+  private viewerInFieldFrame(): Vector3 | null {
+    const camera = this.scene.activeCamera;
+    if (!camera) return null;
+    this.root.getWorldMatrix().invertToRef(this.viewerMatrixScratch);
+    return Vector3.TransformCoordinatesToRef(camera.globalPosition, this.viewerMatrixScratch, this.viewerScratch);
   }
 
   /**
@@ -981,7 +991,7 @@ export class CubeField {
       this.physics.drive(deltaTime, this.fieldEngine.isMorphing(), lift);
       return;
     }
-    this.animator.animate(this.cubes, deltaTime, sceneTime, normalDirection, this.tiles.groups);
+    this.animator.animate(this.cubes, deltaTime, sceneTime, normalDirection, this.tiles.groups, this.viewerInFieldFrame());
   }
 
   private applyContentToCubes(): void {

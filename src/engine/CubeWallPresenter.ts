@@ -564,12 +564,10 @@ export class CubeWallPresenter {
       this.currentBillboardCell = null;
       this.currentSelectionNormalWorld = null;
       this.billboardScreenMetrics = null;
-      if (this.config.selectionCameraFollowEnabled && !manualActive) {
-        this.cameraController.focusOnOverview(animate);
-        if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled) {
-          const cameraPos = this.sceneController.getCamera().position.clone();
-          this.updateDepthOfFieldFocus(null, cameraPos);
-        }
+      // The camera stays where it is; back to the overview only on request (showOverview).
+      if (this.config.depthOfFieldEnabled && this.config.depthOfFieldAutoFocusEnabled && !manualActive) {
+        const cameraPos = this.sceneController.getCamera().position.clone();
+        this.updateDepthOfFieldFocus(null, cameraPos);
       }
       if (!this.config.depthOfFieldAutoFocusEnabled && !manualActive) {
         this.cameraController.setManualOverride(true);
@@ -640,6 +638,16 @@ export class CubeWallPresenter {
     } else {
       this.emitHtmlBillboardState();
     }
+  }
+
+  /** Clears the selection and flies the camera back to the overview of the whole field. */
+  public showOverview(): void {
+    if (this.cubeField.getCurrentSelection()) {
+      this.cubeField.selectCell(null);
+      this.updateBillboard(null, { animate: true, reason: 'manual' });
+    }
+    this.setManualCameraOverride(false);
+    this.cameraController.focusOnOverview(true);
   }
 
   public randomizeFieldOrientation(): void {
